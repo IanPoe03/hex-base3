@@ -1,39 +1,38 @@
+import base64
+import io
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
 # =====================
-# CONFIG
+# MOBILE-ONLY CONFIG
 # =====================
-RADIUS = 3
-HEX_SIZE = 42
-PADDING = 40
+RADIUS = 2
+HEX_SIZE = 58          # bigger tiles since board is smaller
+PADDING = 18
 
-BG = (25, 25, 30)
-GRID_COLOR = (80, 80, 90)
-OUTLINE = (40, 40, 50)
-TEXT_COLOR = (20, 20, 25)
+BG = (18, 18, 22)
+GRID_COLOR = (70, 70, 82)
+OUTLINE = (35, 35, 45)
+TEXT_COLOR = (15, 15, 18)
 
 TILE_COLORS = [
-    (230, 230, 230),
-    (200, 220, 255),
-    (180, 200, 255),
-    (255, 220, 180),
-    (255, 200, 160),
-    (255, 180, 140),
-    (255, 160, 120),
-    (255, 140, 100),
-    (255, 120, 80),
-    (255, 100, 60),
+    (235, 235, 235),  # 1
+    (200, 220, 255),  # 3
+    (180, 205, 255),  # 9
+    (255, 225, 190),  # 27
+    (255, 205, 170),  # 81
+    (255, 185, 150),  # 243
+    (255, 165, 130),  # 729
+    (255, 145, 110),  # 2187
 ]
 
-# Axial (pointy-top)
+# Axial (pointy-top) directions
 DIRECTIONS = [
     (1, 0),    # 0
     (1, -1),   # 1
@@ -43,14 +42,14 @@ DIRECTIONS = [
     (0, 1),    # 5
 ]
 
-# FEEL-CORRECT mapping (because sliding happens along -DIRECTIONS[dir_index])
+# We slide along -DIRECTIONS[dir_index], so these are the "feel-correct" labels:
 MOVE = {
-    "l": 0,       # left
-    "r": 3,       # right
-    "ul": 5,      # up-left
-    "ur": 4,      # up-right
-    "dl": 1,      # down-left
-    "dr": 2,      # down-right
+    "l": 0,
+    "r": 3,
+    "ul": 5,
+    "ur": 4,
+    "dl": 1,
+    "dr": 2,
 }
 
 # =====================
@@ -65,8 +64,8 @@ def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
 def hex_corners(cx: float, cy: float, size: int = HEX_SIZE) -> List[Tuple[float, float]]:
     pts = []
     for i in range(6):
-        a = math.radians(60 * i - 30)
-        pts.append((cx + size * math.cos(a), cy + size * math.sin(a)))
+        angle = math.radians(60 * i - 30)  # pointy-top
+        pts.append((cx + size * math.cos(angle), cy + size * math.sin(angle)))
     return pts
 
 def generate_hex_cells(radius: int) -> List[Tuple[int, int]]:
@@ -115,9 +114,9 @@ def merge_triples(values: List[int]) -> Tuple[List[int], int]:
         triples = run_len // 3
         rem = run_len % 3
         for _ in range(triples):
-            new_val = v * 3
-            result.append(new_val)
-            score_add += new_val
+            nv = v * 3
+            result.append(nv)
+            score_add += nv
         for _ in range(rem):
             result.append(v)
         i = j
@@ -136,10 +135,10 @@ class GameState:
 
 def new_game(cells: List[Tuple[int, int]]) -> GameState:
     board = {c: 0 for c in cells}
-    state = GameState(board=board, score=0, game_over=False)
-    spawn_tile(state)
-    spawn_tile(state)
-    return state
+    s = GameState(board=board, score=0, game_over=False)
+    spawn_tile(s)
+    spawn_tile(s)
+    return s
 
 def spawn_tile(state: GameState) -> bool:
     empties = [c for c, v in state.board.items() if v == 0]
@@ -152,18 +151,12 @@ def spawn_tile(state: GameState) -> bool:
 def has_moves(state: GameState, dir_lines) -> bool:
     if any(v == 0 for v in state.board.values()):
         return True
+    # any triple exists in any direction line?
     for d_idx in range(6):
         for line in dir_lines[d_idx]:
             vals = [state.board[c] for c in line]
-            prev = None
-            cnt = 0
-            for v in vals:
-                if v != 0 and v == prev:
-                    cnt += 1
-                else:
-                    prev = v
-                    cnt = 1 if v != 0 else 0
-                if v != 0 and cnt >= 3:
+            for i in range(len(vals) - 2):
+                if vals[i] != 0 and vals[i] == vals[i+1] == vals[i+2]:
                     return True
     return False
 
@@ -175,15 +168,13 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
     gained = 0
 
     for line in dir_lines[dir_index]:
-        vals = [state.board[c] for c in line]
-        original = list(vals)
-
-        non_zero = [v for v in vals if v != 0]
+        original = [state.board[c] for c in line]
+        non_zero = [v for v in original if v != 0]
         if not non_zero:
             continue
 
         merged, add = merge_triples(non_zero)
-        new_vals = merged + [0] * (len(vals) - len(merged))
+        new_vals = merged + [0] * (len(line) - len(merged))
 
         if new_vals != original:
             changed = True
@@ -201,74 +192,16 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
     return changed
 
 # =====================
-# CLICKABLE ARROWS
+# RENDER BOARD -> BASE64 PNG
 # =====================
 
-def point_in_triangle(px: float, py: float, a, b, c) -> bool:
-    ax, ay = a
-    bx, by = b
-    cx, cy = c
-    v0x, v0y = cx - ax, cy - ay
-    v1x, v1y = bx - ax, by - ay
-    v2x, v2y = px - ax, py - ay
-    dot00 = v0x * v0x + v0y * v0y
-    dot01 = v0x * v1x + v0y * v1y
-    dot02 = v0x * v2x + v0y * v2y
-    dot11 = v1x * v1x + v1y * v1y
-    dot12 = v1x * v2x + v1y * v2y
-    denom = dot00 * dot11 - dot01 * dot01
-    if denom == 0:
-        return False
-    inv = 1.0 / denom
-    u = (dot11 * dot02 - dot01 * dot12) * inv
-    v = (dot00 * dot12 - dot01 * dot02) * inv
-    return (u >= 0) and (v >= 0) and (u + v <= 1)
-
-def build_corner_arrows(cells, centers, board_cx=0.0, board_cy=0.0):
-    arrows = []
-    offset = HEX_SIZE * 1.4
-    arrow_len = 26
-    arrow_width = 22
-
-    for idx, (dq, dr) in enumerate(DIRECTIONS):
-        mvx, mvy = axial_to_pixel(-dq, -dr, size=HEX_SIZE)
-        L = math.hypot(mvx, mvy)
-        ux, uy = mvx / L, mvy / L
-
-        t_max = -float("inf")
-        for c in cells:
-            cx, cy = centers[c]
-            t = (cx - board_cx) * ux + (cy - board_cy) * uy
-            t_max = max(t_max, t)
-
-        cx = board_cx + (t_max + offset) * ux
-        cy = board_cy + (t_max + offset) * uy
-
-        tip = (cx + ux * arrow_len, cy + uy * arrow_len)
-        back = (cx - ux * arrow_len * 0.6, cy - uy * arrow_len * 0.6)
-        px, py = -uy, ux
-        left = (back[0] + px * arrow_width / 2, back[1] + py * arrow_width / 2)
-        right = (back[0] - px * arrow_width / 2, back[1] - py * arrow_width / 2)
-
-        arrows.append({"dir": idx, "points": [tip, left, right]})
-
-    return arrows
-
-# =====================
-# RENDER
-# =====================
-
-def render_board_image(cells, centers, state, arrows):
+def render_board_png(cells, centers, state: GameState) -> bytes:
+    # bounds
     minx = miny = float("inf")
     maxx = maxy = float("-inf")
-
     for c in cells:
         cx, cy = centers[c]
         for x, y in hex_corners(cx, cy):
-            minx = min(minx, x); miny = min(miny, y)
-            maxx = max(maxx, x); maxy = max(maxy, y)
-    for a in arrows:
-        for x, y in a["points"]:
             minx = min(minx, x); miny = min(miny, y)
             maxx = max(maxx, x); maxy = max(maxy, y)
 
@@ -281,8 +214,8 @@ def render_board_image(cells, centers, state, arrows):
     draw = ImageDraw.Draw(img)
 
     try:
-        font_big = ImageFont.truetype("DejaVuSans.ttf", 26)
-        font_small = ImageFont.truetype("DejaVuSans.ttf", 14)
+        font_big = ImageFont.truetype("DejaVuSans.ttf", 30)
+        font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
     except Exception:
         font_big = ImageFont.load_default()
         font_small = ImageFont.load_default()
@@ -296,126 +229,54 @@ def render_board_image(cells, centers, state, arrows):
         if v:
             lv = min(level_from_value(v), len(TILE_COLORS) - 1)
             draw.polygon(pts, fill=TILE_COLORS[lv])
-            draw.polygon(pts, outline=OUTLINE, width=2)
+            draw.polygon(pts, outline=OUTLINE, width=3)
 
             text = str(v)
             bbox = draw.textbbox((0, 0), text, font=font_big)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text((cx + sx - tw / 2, cy + sy - th / 2), text, fill=TEXT_COLOR, font=font_big)
         else:
-            draw.polygon(pts, outline=(55, 55, 65), width=1)
+            draw.polygon(pts, outline=(55, 55, 66), width=2)
 
-    arrows_img = []
-    for a in arrows:
-        pts = [(x + sx, y + sy) for x, y in a["points"]]
-        draw.polygon(pts, fill=(200, 200, 220))
-        draw.polygon(pts, outline=(50, 50, 60), width=2)
-        arrows_img.append({"dir": a["dir"], "points": pts})
-
-    draw.text((12, 10), "Mobile: swipe on the board. Also: tap arrows.", fill=(235, 235, 235), font=font_small)
-    draw.text((12, 28), "Desktop: tap arrows (hotkeys optional).", fill=(210, 210, 210), font=font_small)
-
+    # small HUD at top-left
+    hud = f"Score: {state.score}"
+    draw.text((10, 10), hud, fill=(235, 235, 235), font=font_small)
     if state.game_over:
-        draw.text((12, 46), "GAME OVER — tap Reset", fill=(255, 200, 200), font=font_small)
+        draw.text((10, 30), "GAME OVER", fill=(255, 180, 180), font=font_small)
 
-    return img, arrows_img
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+def png_to_data_uri(png_bytes: bytes) -> str:
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return f"data:image/png;base64,{b64}"
 
 # =====================
-# MOBILE SWIPE LAYER
+# STREAMLIT APP (MOBILE ONLY)
 # =====================
 
-def swipe_layer(height_px: int = 240):
+st.set_page_config(page_title="Hex 2048 Base-3 (Mobile)", layout="wide")
+
+# Hard-disable scrolling + hide Streamlit chrome
+st.markdown(
     """
-    JS captures a swipe and sets query param mv=ul|ur|l|r|dl|dr then reloads.
-    We map 4 cardinal swipes into 4 of the 6 moves, and diagonals into the other 2.
-    """
-    components.html(
-        f"""
-        <div id="swipepad" style="
-            width: 100%;
-            height: {height_px}px;
-            border-radius: 16px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            touch-action: none;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            color: rgba(255,255,255,0.65);
-            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-            font-size: 14px;
-            user-select:none;">
-            Swipe here (or on the board) to move
-        </div>
-        <script>
-        const el = document.getElementById("swipepad");
-        let sx=0, sy=0, t0=0;
-
-        function setMove(mv) {{
-            const url = new URL(window.location.href);
-            url.searchParams.set("mv", mv);
-            window.location.href = url.toString();
-        }}
-
-        function classify(dx, dy) {{
-            const adx = Math.abs(dx), ady = Math.abs(dy);
-            const minDist = 25;
-            if (Math.hypot(dx,dy) < minDist) return null;
-
-            // angle in degrees
-            const ang = Math.atan2(-dy, dx) * 180 / Math.PI; // y inverted
-            // bucket into 6 directions around a circle:
-            // 0° right, 60° up-right, 120° up-left, 180° left, -120° down-left, -60° down-right
-            // We'll map to mv codes: r, ur, ul, l, dl, dr
-            let a = ang;
-            // normalize to [-180,180]
-            if (a > 180) a -= 360;
-            if (a < -180) a += 360;
-
-            // nearest multiple of 60
-            const k = Math.round(a / 60);
-            const bucket = ((k % 6) + 6) % 6; // 0..5
-
-            // bucket index meaning:
-            // 0: right, 1: up-right, 2: up-left, 3: left, 4: down-left, 5: down-right
-            switch(bucket) {{
-                case 0: return "r";
-                case 1: return "ur";
-                case 2: return "ul";
-                case 3: return "l";
-                case 4: return "dl";
-                case 5: return "dr";
-            }}
-            return null;
-        }}
-
-        el.addEventListener("touchstart", (e) => {{
-            const t = e.touches[0];
-            sx = t.clientX; sy = t.clientY; t0 = Date.now();
-        }}, {{passive:true}});
-
-        el.addEventListener("touchend", (e) => {{
-            const t = e.changedTouches[0];
-            const dx = t.clientX - sx;
-            const dy = t.clientY - sy;
-            const mv = classify(dx, dy);
-            if (mv) setMove(mv);
-        }}, {{passive:true}});
-        </script>
-        """,
-        height=height_px + 10,
-    )
-
-
-# =====================
-# STREAMLIT APP
-# =====================
-
-st.set_page_config(page_title="Hex 2048 Base-3", layout="centered")
+    <style>
+      html, body { height: 100%; overflow: hidden !important; }
+      #root, .stApp { height: 100vh; overflow: hidden !important; }
+      header, footer { display: none !important; }
+      .block-container { padding-top: 0.3rem; padding-bottom: 0.1rem; height: 100vh; overflow: hidden !important; }
+      /* prevent iOS "rubber band" */
+      body { overscroll-behavior: none; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 cells = generate_hex_cells(RADIUS)
 dir_lines = build_direction_lines(cells, DIRECTIONS)
 
+# centers, recentered
 centers_local = {c: axial_to_pixel(c[0], c[1], size=HEX_SIZE) for c in cells}
 cx0 = sum(x for x, _ in centers_local.values()) / len(centers_local)
 cy0 = sum(y for _, y in centers_local.values()) / len(centers_local)
@@ -423,60 +284,136 @@ centers = {c: (centers_local[c][0] - cx0, centers_local[c][1] - cy0) for c in ce
 
 if "state" not in st.session_state:
     st.session_state.state = new_game(cells)
-if "last_click_t" not in st.session_state:
-    st.session_state.last_click_t = None
 
 state: GameState = st.session_state.state
 
-# ---- Handle swipe action from query params (mv=...) ----
-q = st.query_params
-mv = q.get("mv", None)
+# Apply swipe move from query param mv=...
+mv = st.query_params.get("mv")
 if mv in MOVE and not state.game_over:
     do_move(state, MOVE[mv], dir_lines)
-    # clear param so it doesn't repeat on refresh
     st.query_params.clear()
     st.rerun()
 
-st.title("Hex 2048 (Base-3) — Mobile Swipe")
-st.caption("Swipe to move. Tap arrows as fallback. (On iOS/Android this feels great.)")
+# Reset from query param reset=1
+if st.query_params.get("reset") == "1":
+    st.session_state.state = new_game(cells)
+    st.query_params.clear()
+    st.rerun()
 
-with st.sidebar:
-    if st.button("Reset"):
-        st.session_state.state = new_game(cells)
-        st.query_params.clear()
-        st.rerun()
-    st.write("Moves: 6-direction swipe (auto-bucketed).")
+# Render board image
+png = render_board_png(cells, centers, state)
+data_uri = png_to_data_uri(png)
 
-# Swipe pad (mobile-friendly)
-swipe_layer(height_px=190)
+# Fullscreen HTML: shows image + captures swipes without scrolling
+components.html(
+    f"""
+    <div id="appwrap" style="
+        position: fixed; inset: 0;
+        background: rgb(18,18,22);
+        display:flex; flex-direction:column;
+        align-items:center; justify-content:center;
+        touch-action: none;
+        overflow:hidden;">
+      
+      <div style="
+          width: 100%;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          padding: 12px 16px;
+          box-sizing:border-box;
+          color: rgba(255,255,255,0.92);
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+          font-size: 16px;">
+        <div>Hex 2048 Base-3</div>
+        <button id="resetBtn" style="
+            font-size:14px;
+            padding: 8px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.08);
+            color: rgba(255,255,255,0.92);">
+          Reset
+        </button>
+      </div>
 
-# Render + clickable arrow triangles
-arrows_world = build_corner_arrows(cells, centers, 0.0, 0.0)
-img, arrows_img = render_board_image(cells, centers, state, arrows_world)
+      <img id="board" src="{data_uri}" style="
+          max-width: 96vw;
+          max-height: 80vh;
+          width: auto;
+          height: auto;
+          border-radius: 16px;
+          border: 1px solid rgba(255,255,255,0.10);
+          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+          user-select:none;
+          -webkit-user-drag:none;
+          touch-action:none;" />
 
-click = streamlit_image_coordinates(img, key="board_click")
-st.image(img, use_container_width=True)
-st.metric("Score", state.score)
+      <div style="
+          margin-top: 10px;
+          color: rgba(255,255,255,0.70);
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+          font-size: 13px;">
+        Swipe on the board in 6 directions
+      </div>
+    </div>
 
-# Clickable arrows
-if click and "x" in click and "y" in click and "time" in click:
-    if st.session_state.last_click_t != click["time"]:
-        st.session_state.last_click_t = click["time"]
+    <script>
+      // Prevent any scrolling anywhere
+      document.addEventListener('touchmove', function(e) {{
+        e.preventDefault();
+      }}, {{ passive: false }});
 
-        px = float(click["x"])
-        py = float(click["y"])
+      const img = document.getElementById("board");
+      const resetBtn = document.getElementById("resetBtn");
 
-        clicked_dir: Optional[int] = None
-        for a in arrows_img:
-            p0, p1, p2 = a["points"]
-            if point_in_triangle(px, py, p0, p1, p2):
-                clicked_dir = a["dir"]
-                break
+      function setParam(key, val) {{
+        const url = new URL(window.location.href);
+        url.searchParams.set(key, val);
+        window.location.href = url.toString();
+      }}
 
-        if clicked_dir is not None and not state.game_over:
-            do_move(state, clicked_dir, dir_lines)
-            st.rerun()
+      resetBtn.addEventListener("click", () => setParam("reset", "1"));
 
-if state.game_over:
-    st.error("No moves left. Tap Reset to play again.")
+      let sx=0, sy=0;
+
+      function classify(dx, dy) {{
+        const dist = Math.hypot(dx, dy);
+        if (dist < 22) return null;
+
+        // angle: 0 right, 60 up-right, 120 up-left, 180 left, -120 down-left, -60 down-right
+        const ang = Math.atan2(-dy, dx) * 180 / Math.PI;
+
+        // snap to nearest 60°
+        const k = Math.round(ang / 60);
+        const bucket = ((k % 6) + 6) % 6;
+
+        // 0: r, 1: ur, 2: ul, 3: l, 4: dl, 5: dr
+        if (bucket === 0) return "r";
+        if (bucket === 1) return "ur";
+        if (bucket === 2) return "ul";
+        if (bucket === 3) return "l";
+        if (bucket === 4) return "dl";
+        if (bucket === 5) return "dr";
+        return null;
+      }}
+
+      img.addEventListener("touchstart", (e) => {{
+        const t = e.touches[0];
+        sx = t.clientX; sy = t.clientY;
+      }}, {{ passive: true }});
+
+      img.addEventListener("touchend", (e) => {{
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx;
+        const dy = t.clientY - sy;
+        const mv = classify(dx, dy);
+        if (mv) setParam("mv", mv);
+      }}, {{ passive: true }});
+    </script>
+    """,
+    height=0,  # fixed-position overlay, no need for Streamlit layout height
+)
+
+# Nothing else below; mobile overlay handles everything.
 
