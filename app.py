@@ -10,32 +10,30 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 # =====================
 # CONFIG
 # =====================
+
 RADIUS = 3
-HEX_SIZE = 48
-PADDING = 24
+HEX_SIZE = 42
+PADDING = 40
 
-BG = (18, 18, 22)
-GRID_COLOR = (70, 70, 82)
-OUTLINE = (35, 35, 45)
-TEXT_COLOR = (15, 15, 18)
-
-ARROW_FILL = (225, 225, 240)
-ARROW_OUTLINE = (60, 60, 80)
+BG = (25, 25, 30)
+GRID_COLOR = (80, 80, 90)
+OUTLINE = (40, 40, 50)
+TEXT_COLOR = (20, 20, 25)
 
 TILE_COLORS = [
-    (235, 235, 235),  # 1
+    (230, 230, 230),  # 1
     (200, 220, 255),  # 3
-    (180, 205, 255),  # 9
-    (255, 225, 190),  # 27
-    (255, 205, 170),  # 81
-    (255, 185, 150),  # 243
-    (255, 165, 130),  # 729
-    (255, 145, 110),  # 2187
-    (255, 125, 95),   # 6561
-    (255, 105, 80),   # 19683
+    (180, 200, 255),  # 9
+    (255, 220, 180),  # 27
+    (255, 200, 160),  # 81
+    (255, 180, 140),  # 243
+    (255, 160, 120),  # 729
+    (255, 140, 100),  # 2187
+    (255, 120, 80),
+    (255, 100, 60),
 ]
 
-# Axial (pointy-top) directions (neighbors)
+# Axial directions (pointy-top)
 DIRECTIONS = [
     (1, 0),    # 0
     (1, -1),   # 1
@@ -45,19 +43,20 @@ DIRECTIONS = [
     (0, 1),    # 5
 ]
 
-# Sliding happens along -DIRECTIONS[dir_index]
-MOVE_LABELS = {
-    0: "←",
-    3: "→",
-    5: "↖",
-    4: "↗",
-    1: "↙",
-    2: "↘",
+# FEEL-CORRECT mapping (because the slide happens along -DIRECTIONS[dir_index])
+MOVE = {
+    "left": 0,        # A
+    "right": 3,       # D
+    "up_left": 5,     # Q
+    "up_right": 4,    # E
+    "down_left": 1,   # Z
+    "down_right": 2,  # C
 }
 
 # =====================
-# GEOMETRY
+# HEX GEOMETRY
 # =====================
+
 def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
     x = size * (math.sqrt(3) * q + (math.sqrt(3) / 2) * r)
     y = size * (3.0 / 2) * r
@@ -82,6 +81,7 @@ def generate_hex_cells(radius: int) -> List[Tuple[int, int]]:
 # =====================
 # GAME LOGIC
 # =====================
+
 def build_direction_lines(cells: List[Tuple[int, int]], directions) -> List[List[List[Tuple[int, int]]]]:
     cell_set = set(cells)
     all_dir_lines = []
@@ -102,25 +102,28 @@ def build_direction_lines(cells: List[Tuple[int, int]], directions) -> List[List
 def merge_triples(values: List[int]) -> Tuple[List[int], int]:
     if not values:
         return [], 0
-    out = []
-    score = 0
+    result = []
+    score_add = 0
     i = 0
-    while i < len(values):
+    n = len(values)
+    while i < n:
         v = values[i]
         j = i + 1
-        while j < len(values) and values[j] == v:
+        while j < n and values[j] == v:
             j += 1
-        run = j - i
-        triples = run // 3
-        rem = run % 3
+        run_len = j - i
+        triples = run_len // 3
+        rem = run_len % 3
+
         for _ in range(triples):
-            nv = v * 3
-            out.append(nv)
-            score += nv
+            new_val = v * 3
+            result.append(new_val)
+            score_add += new_val
         for _ in range(rem):
-            out.append(v)
+            result.append(v)
+
         i = j
-    return out, score
+    return result, score_add
 
 def level_from_value(v: int) -> int:
     if v <= 0:
@@ -135,9 +138,10 @@ class GameState:
 
 def new_game(cells: List[Tuple[int, int]]) -> GameState:
     board = {c: 0 for c in cells}
-    s = GameState(board=board, score=0, game_over=False)
-    spawn_tile(s); spawn_tile(s)
-    return s
+    state = GameState(board=board, score=0, game_over=False)
+    spawn_tile(state)
+    spawn_tile(state)
+    return state
 
 def spawn_tile(state: GameState) -> bool:
     empties = [c for c, v in state.board.items() if v == 0]
@@ -153,8 +157,15 @@ def has_moves(state: GameState, dir_lines) -> bool:
     for d_idx in range(6):
         for line in dir_lines[d_idx]:
             vals = [state.board[c] for c in line]
-            for i in range(len(vals) - 2):
-                if vals[i] != 0 and vals[i] == vals[i+1] == vals[i+2]:
+            prev = None
+            cnt = 0
+            for v in vals:
+                if v != 0 and v == prev:
+                    cnt += 1
+                else:
+                    prev = v
+                    cnt = 1 if v != 0 else 0
+                if v != 0 and cnt >= 3:
                     return True
     return False
 
@@ -166,18 +177,21 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
     gained = 0
 
     for line in dir_lines[dir_index]:
-        original = [state.board[c] for c in line]
-        non_zero = [v for v in original if v != 0]
+        vals = [state.board[c] for c in line]
+        original = list(vals)
+
+        non_zero = [v for v in vals if v != 0]
         if not non_zero:
             continue
 
         merged, add = merge_triples(non_zero)
-        new_vals = merged + [0] * (len(line) - len(merged))
+        new_vals = merged + [0] * (len(vals) - len(merged))
 
         if new_vals != original:
             changed = True
 
         gained += add
+
         for c, v in zip(line, new_vals):
             state.board[c] = v
 
@@ -190,121 +204,76 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
     return changed
 
 # =====================
-# CLICK HIT TESTING
+# CLICKABLE ARROWS
 # =====================
-def point_in_triangle(px: float, py: float, a, b, c, eps: float = 0.03) -> bool:
+
+def point_in_triangle(px: float, py: float, a, b, c) -> bool:
     ax, ay = a
     bx, by = b
     cx, cy = c
     v0x, v0y = cx - ax, cy - ay
     v1x, v1y = bx - ax, by - ay
     v2x, v2y = px - ax, py - ay
-    dot00 = v0x*v0x + v0y*v0y
-    dot01 = v0x*v1x + v0y*v1y
-    dot02 = v0x*v2x + v0y*v2y
-    dot11 = v1x*v1x + v1y*v1y
-    dot12 = v1x*v2x + v1y*v2y
-    denom = dot00*dot11 - dot01*dot01
+    dot00 = v0x * v0x + v0y * v0y
+    dot01 = v0x * v1x + v0y * v1y
+    dot02 = v0x * v2x + v0y * v2y
+    dot11 = v1x * v1x + v1y * v1y
+    dot12 = v1x * v2x + v1y * v2y
+    denom = dot00 * dot11 - dot01 * dot01
     if denom == 0:
         return False
     inv = 1.0 / denom
-    u = (dot11*dot02 - dot01*dot12) * inv
-    v = (dot00*dot12 - dot01*dot02) * inv
-    return (u >= -eps) and (v >= -eps) and (u + v <= 1 + eps)
+    u = (dot11 * dot02 - dot01 * dot12) * inv
+    v = (dot00 * dot12 - dot01 * dot02) * inv
+    return (u >= 0) and (v >= 0) and (u + v <= 1)
 
-def scale_triangle(tri, factor: float):
-    cx = sum(p[0] for p in tri) / 3.0
-    cy = sum(p[1] for p in tri) / 3.0
-    return [(cx + (x - cx)*factor, cy + (y - cy)*factor) for x, y in tri]
-
-def map_click_to_image_coords(click_dict, img_w, img_h):
-    x = float(click_dict["x"])
-    y = float(click_dict["y"])
-    disp_w = click_dict.get("width", None)
-    disp_h = click_dict.get("height", None)
-    if disp_w and disp_h:
-        disp_w = float(disp_w)
-        disp_h = float(disp_h)
-        if disp_w > 0 and disp_h > 0:
-            x = x * (img_w / disp_w)
-            y = y * (img_h / disp_h)
-    x = max(0.0, min(float(img_w - 1), x))
-    y = max(0.0, min(float(img_h - 1), y))
-    return x, y
-
-# =====================
-# CORNER ARROWS (outside board)
-# =====================
-def build_corner_arrows_world(centers: Dict[Tuple[int, int], Tuple[float, float]]):
-    # find board bounds in world coords
-    xs = [v[0] for v in centers.values()]
-    ys = [v[1] for v in centers.values()]
-    minx, maxx = min(xs), max(xs)
-    miny, maxy = min(ys), max(ys)
-
-    # approximate the 6 board "corners" in screen space (pointy-top)
-    # These are just anchor points; we then orient each arrow using the intended move direction.
-    corner_anchors = [
-        (maxx, (miny+maxy)/2),    # right-ish
-        ((maxx+minx)/2, miny),    # upper-right-ish
-        ((maxx+minx)/2, miny),    # upper-left-ish (same y; we’ll separate by direction vector)
-        (minx, (miny+maxy)/2),    # left-ish
-        ((maxx+minx)/2, maxy),    # lower-left-ish
-        ((maxx+minx)/2, maxy),    # lower-right-ish
-    ]
-
-    # use direction vectors to push anchors outwards properly
+def build_corner_arrows(cells, centers, board_cx=0.0, board_cy=0.0):
     arrows = []
-    offset = HEX_SIZE * 2.1
-    arrow_len = 32
-    arrow_width = 36
+    offset = HEX_SIZE * 1.4
+    arrow_len = 26
+    arrow_width = 22
 
-    # Map each move direction index to a corner slot (keeps them at corners like your earlier version)
-    # Here we place each arrow in the *same general angular area* as the move direction.
-    dir_to_slot = {3: 0, 4: 1, 5: 2, 0: 3, 1: 4, 2: 5}
-
-    for d in range(6):
-        slot = dir_to_slot[d]
-        ax0, ay0 = corner_anchors[slot]
-
-        # movement vector is along -direction (same as the move)
-        dq, dr = DIRECTIONS[d]
+    for idx, (dq, dr) in enumerate(DIRECTIONS):
+        # movement is along -direction
         mvx, mvy = axial_to_pixel(-dq, -dr, size=HEX_SIZE)
         L = math.hypot(mvx, mvy)
         ux, uy = mvx / L, mvy / L
 
-        # push outward from center based on arrow direction
-        cx = ax0 + ux * offset
-        cy = ay0 + uy * offset
+        # farthest tile center along movement direction
+        t_max = -float("inf")
+        for c in cells:
+            cx, cy = centers[c]
+            t = (cx - board_cx) * ux + (cy - board_cy) * uy
+            t_max = max(t_max, t)
+
+        cx = board_cx + (t_max + offset) * ux
+        cy = board_cy + (t_max + offset) * uy
 
         tip = (cx + ux * arrow_len, cy + uy * arrow_len)
-        back = (cx - ux * arrow_len * 0.75, cy - uy * arrow_len * 0.75)
+        back = (cx - ux * arrow_len * 0.6, cy - uy * arrow_len * 0.6)
         px, py = -uy, ux
         left = (back[0] + px * arrow_width / 2, back[1] + py * arrow_width / 2)
         right = (back[0] - px * arrow_width / 2, back[1] - py * arrow_width / 2)
 
-        arrows.append({"dir": d, "tri": [tip, left, right]})
+        arrows.append({"dir": idx, "points": [tip, left, right]})
 
     return arrows
 
 # =====================
-# RENDER
+# RENDERING (PIL)
 # =====================
-def render_scene(cells, centers, state: GameState):
-    arrows_world = build_corner_arrows_world(centers)
 
-    # bounds = tiles + arrows
-    minx = miny = 1e18
-    maxx = maxy = -1e18
+def render_board_image(cells, centers, state, arrows):
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
 
     for c in cells:
         cx, cy = centers[c]
         for x, y in hex_corners(cx, cy):
             minx = min(minx, x); miny = min(miny, y)
             maxx = max(maxx, x); maxy = max(maxy, y)
-
-    for a in arrows_world:
-        for x, y in a["tri"]:
+    for a in arrows:
+        for x, y in a["points"]:
             minx = min(minx, x); miny = min(miny, y)
             maxx = max(maxx, x); maxy = max(maxy, y)
 
@@ -315,14 +284,11 @@ def render_scene(cells, centers, state: GameState):
 
     img = Image.new("RGB", (w, h), BG)
     draw = ImageDraw.Draw(img)
-
     try:
-        font_big = ImageFont.truetype("DejaVuSans.ttf", 28)
-        font_mid = ImageFont.truetype("DejaVuSans.ttf", 22)
-        font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
+        font_big = ImageFont.truetype("DejaVuSans.ttf", 26)
+        font_small = ImageFont.truetype("DejaVuSans.ttf", 14)
     except Exception:
         font_big = ImageFont.load_default()
-        font_mid = ImageFont.load_default()
         font_small = ImageFont.load_default()
 
     # tiles
@@ -335,44 +301,43 @@ def render_scene(cells, centers, state: GameState):
         if v:
             lv = min(level_from_value(v), len(TILE_COLORS) - 1)
             draw.polygon(pts, fill=TILE_COLORS[lv])
-            draw.polygon(pts, outline=OUTLINE, width=3)
+            draw.polygon(pts, outline=OUTLINE, width=2)
+
             text = str(v)
             bbox = draw.textbbox((0, 0), text, font=font_big)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text((cx + sx - tw / 2, cy + sy - th / 2), text, fill=TEXT_COLOR, font=font_big)
         else:
-            draw.polygon(pts, outline=(55, 55, 66), width=2)
+            draw.polygon(pts, outline=(55, 55, 65), width=1)
 
-    # arrows (clickable)
+    # arrows
     arrows_img = []
-    for a in arrows_world:
-        tri = [(x + sx, y + sy) for x, y in a["tri"]]
-        draw.polygon(tri, fill=ARROW_FILL)
-        draw.polygon(tri, outline=ARROW_OUTLINE, width=3)
+    for a in arrows:
+        pts = [(x + sx, y + sy) for x, y in a["points"]]
+        draw.polygon(pts, fill=(200, 200, 220))
+        draw.polygon(pts, outline=(50, 50, 60), width=2)
+        arrows_img.append({"dir": a["dir"], "points": pts})
 
-        cx = sum(p[0] for p in tri) / 3
-        cy = sum(p[1] for p in tri) / 3
-        label = MOVE_LABELS.get(a["dir"], "")
-        bbox = draw.textbbox((0, 0), label, font=font_mid)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((cx - tw / 2, cy - th / 2), label, fill=(25, 25, 30), font=font_mid)
+    # HUD text
+    hud = "Keys: Q↖ E↗  A← D→  Z↙ C↘   |   Click arrows"
+    draw.text((12, 10), hud, fill=(235, 235, 235), font=font_small)
 
-        arrows_img.append({"dir": a["dir"], "hit": scale_triangle(tri, 1.30)})
-
-    draw.text((10, 10), f"Score: {state.score}", fill=(235, 235, 235), font=font_small)
     if state.game_over:
-        draw.text((10, 30), "GAME OVER", fill=(255, 180, 180), font=font_small)
+        msg = "GAME OVER — Press Reset"
+        draw.text((12, 28), msg, fill=(255, 200, 200), font=font_small)
 
     return img, arrows_img
 
 # =====================
 # STREAMLIT APP
 # =====================
-st.set_page_config(page_title="Hex 2048 Base-3 (Desktop)", layout="centered")
+
+st.set_page_config(page_title="Hex 2048 Base-3", layout="centered")
 
 cells = generate_hex_cells(RADIUS)
 dir_lines = build_direction_lines(cells, DIRECTIONS)
 
+# centers (recenter to 0,0)
 centers_local = {c: axial_to_pixel(c[0], c[1], size=HEX_SIZE) for c in cells}
 cx0 = sum(x for x, _ in centers_local.values()) / len(centers_local)
 cy0 = sum(y for _, y in centers_local.values()) / len(centers_local)
@@ -380,33 +345,66 @@ centers = {c: (centers_local[c][0] - cx0, centers_local[c][1] - cy0) for c in ce
 
 if "state" not in st.session_state:
     st.session_state.state = new_game(cells)
-if "last_click_time" not in st.session_state:
-    st.session_state.last_click_time = None
+if "last_click_t" not in st.session_state:
+    st.session_state.last_click_t = None
 
 state: GameState = st.session_state.state
 
-top_left, top_right = st.columns([3, 1])
-with top_left:
-    st.title("Hex 2048 (Base-3) — Desktop")
-    st.caption("Click the corner arrows to move. (Keyboard capture removed.)")
-with top_right:
-    if st.button("Reset"):
-        st.session_state.state = new_game(cells)
-        st.rerun()
+st.title("Hex 2048 (Base-3)")
 
-img, arrows_img = render_scene(cells, centers, state)
-img_w, img_h = img.size
+# --- Keyboard shortcuts using native Streamlit button shortcuts (works on Cloud) ---
+with st.sidebar:
+    st.subheader("Controls")
+    st.write("Keyboard: Q↖ E↗  A← D→  Z↙ X↘")
+    st.write("Mouse: click the arrow triangles")
 
-click = streamlit_image_coordinates(img, key="board", use_column_width=True)
+    reset = st.button("Reset", key="reset_btn")
 
-if click and "time" in click and "x" in click and "y" in click:
-    if st.session_state.last_click_time != click["time"]:
-        st.session_state.last_click_time = click["time"]
-        px, py = map_click_to_image_coords(click, img_w, img_h)
+    # Small “hotkey buttons” (they can be visible; Streamlit will show hints)
+    # Using shortcut=... is now built-in. :contentReference[oaicite:2]{index=2}
+    mv_ul = st.button("↖ Up-Left", shortcut="Q", disabled=state.game_over, key="mv_ul")
+    mv_ur = st.button("↗ Up-Right", shortcut="E", disabled=state.game_over, key="mv_ur")
+    mv_l  = st.button("← Left",    shortcut="A", disabled=state.game_over, key="mv_l")
+    mv_r  = st.button("→ Right",   shortcut="D", disabled=state.game_over, key="mv_r")
+    mv_dl = st.button("↙ Down-Left", shortcut="Z", disabled=state.game_over, key="mv_dl")
+    mv_dr = st.button("↘ Down-Right", shortcut="X", disabled=state.game_over, key="mv_dr")
+
+if reset:
+    st.session_state.state = new_game(cells)
+    st.rerun()
+
+if mv_l:
+    do_move(state, MOVE["left"], dir_lines); st.rerun()
+if mv_r:
+    do_move(state, MOVE["right"], dir_lines); st.rerun()
+if mv_ul:
+    do_move(state, MOVE["up_left"], dir_lines); st.rerun()
+if mv_ur:
+    do_move(state, MOVE["up_right"], dir_lines); st.rerun()
+if mv_dl:
+    do_move(state, MOVE["down_left"], dir_lines); st.rerun()
+if mv_dr:
+    do_move(state, MOVE["down_right"], dir_lines); st.rerun()
+
+# --- Render + clickable arrow triangles ---
+arrows_world = build_corner_arrows(cells, centers, 0.0, 0.0)
+img, arrows_img = render_board_image(cells, centers, state, arrows_world)
+
+click = streamlit_image_coordinates(img, key="board_click")
+
+st.image(img, use_container_width=True)
+st.metric("Score", state.score)
+
+if click and "x" in click and "y" in click and "time" in click:
+    if st.session_state.last_click_t != click["time"]:
+        st.session_state.last_click_t = click["time"]
+
+        px = float(click["x"])
+        py = float(click["y"])
 
         clicked_dir: Optional[int] = None
         for a in arrows_img:
-            p0, p1, p2 = a["hit"]
+            p0, p1, p2 = a["points"]
             if point_in_triangle(px, py, p0, p1, p2):
                 clicked_dir = a["dir"]
                 break
@@ -415,5 +413,5 @@ if click and "time" in click and "x" in click and "y" in click:
             do_move(state, clicked_dir, dir_lines)
             st.rerun()
 
-st.image(img, use_container_width=True)
-
+if state.game_over:
+    st.error("No moves left. Press Reset (R).")
