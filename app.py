@@ -6,11 +6,11 @@ from typing import Dict, List, Tuple, Optional
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
+import streamlit.components.v1 as components
 
 # =====================
 # CONFIG
 # =====================
-
 RADIUS = 3
 HEX_SIZE = 42
 PADDING = 40
@@ -21,19 +21,19 @@ OUTLINE = (40, 40, 50)
 TEXT_COLOR = (20, 20, 25)
 
 TILE_COLORS = [
-    (230, 230, 230),  # 1
-    (200, 220, 255),  # 3
-    (180, 200, 255),  # 9
-    (255, 220, 180),  # 27
-    (255, 200, 160),  # 81
-    (255, 180, 140),  # 243
-    (255, 160, 120),  # 729
-    (255, 140, 100),  # 2187
+    (230, 230, 230),
+    (200, 220, 255),
+    (180, 200, 255),
+    (255, 220, 180),
+    (255, 200, 160),
+    (255, 180, 140),
+    (255, 160, 120),
+    (255, 140, 100),
     (255, 120, 80),
     (255, 100, 60),
 ]
 
-# Axial directions (pointy-top)
+# Axial (pointy-top)
 DIRECTIONS = [
     (1, 0),    # 0
     (1, -1),   # 1
@@ -43,14 +43,14 @@ DIRECTIONS = [
     (0, 1),    # 5
 ]
 
-# FEEL-CORRECT mapping (because the slide happens along -DIRECTIONS[dir_index])
+# FEEL-CORRECT mapping (because sliding happens along -DIRECTIONS[dir_index])
 MOVE = {
-    "left": 0,        # A
-    "right": 3,       # D
-    "up_left": 5,     # Q
-    "up_right": 4,    # E
-    "down_left": 1,   # Z
-    "down_right": 2,  # C
+    "l": 0,       # left
+    "r": 3,       # right
+    "ul": 5,      # up-left
+    "ur": 4,      # up-right
+    "dl": 1,      # down-left
+    "dr": 2,      # down-right
 }
 
 # =====================
@@ -114,14 +114,12 @@ def merge_triples(values: List[int]) -> Tuple[List[int], int]:
         run_len = j - i
         triples = run_len // 3
         rem = run_len % 3
-
         for _ in range(triples):
             new_val = v * 3
             result.append(new_val)
             score_add += new_val
         for _ in range(rem):
             result.append(v)
-
         i = j
     return result, score_add
 
@@ -189,7 +187,6 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
 
         if new_vals != original:
             changed = True
-
         gained += add
 
         for c, v in zip(line, new_vals):
@@ -234,12 +231,10 @@ def build_corner_arrows(cells, centers, board_cx=0.0, board_cy=0.0):
     arrow_width = 22
 
     for idx, (dq, dr) in enumerate(DIRECTIONS):
-        # movement is along -direction
         mvx, mvy = axial_to_pixel(-dq, -dr, size=HEX_SIZE)
         L = math.hypot(mvx, mvy)
         ux, uy = mvx / L, mvy / L
 
-        # farthest tile center along movement direction
         t_max = -float("inf")
         for c in cells:
             cx, cy = centers[c]
@@ -260,7 +255,7 @@ def build_corner_arrows(cells, centers, board_cx=0.0, board_cy=0.0):
     return arrows
 
 # =====================
-# RENDERING (PIL)
+# RENDER
 # =====================
 
 def render_board_image(cells, centers, state, arrows):
@@ -284,6 +279,7 @@ def render_board_image(cells, centers, state, arrows):
 
     img = Image.new("RGB", (w, h), BG)
     draw = ImageDraw.Draw(img)
+
     try:
         font_big = ImageFont.truetype("DejaVuSans.ttf", 26)
         font_small = ImageFont.truetype("DejaVuSans.ttf", 14)
@@ -291,7 +287,6 @@ def render_board_image(cells, centers, state, arrows):
         font_big = ImageFont.load_default()
         font_small = ImageFont.load_default()
 
-    # tiles
     for c in cells:
         cx, cy = centers[c]
         pts = [(x + sx, y + sy) for x, y in hex_corners(cx, cy)]
@@ -310,7 +305,6 @@ def render_board_image(cells, centers, state, arrows):
         else:
             draw.polygon(pts, outline=(55, 55, 65), width=1)
 
-    # arrows
     arrows_img = []
     for a in arrows:
         pts = [(x + sx, y + sy) for x, y in a["points"]]
@@ -318,15 +312,100 @@ def render_board_image(cells, centers, state, arrows):
         draw.polygon(pts, outline=(50, 50, 60), width=2)
         arrows_img.append({"dir": a["dir"], "points": pts})
 
-    # HUD text
-    hud = "Keys: Q↖ E↗  A← D→  Z↙ X↘   |   Click arrows"
-    draw.text((12, 10), hud, fill=(235, 235, 235), font=font_small)
+    draw.text((12, 10), "Mobile: swipe on the board. Also: tap arrows.", fill=(235, 235, 235), font=font_small)
+    draw.text((12, 28), "Desktop: tap arrows (hotkeys optional).", fill=(210, 210, 210), font=font_small)
 
     if state.game_over:
-        msg = "GAME OVER — Press Reset"
-        draw.text((12, 28), msg, fill=(255, 200, 200), font=font_small)
+        draw.text((12, 46), "GAME OVER — tap Reset", fill=(255, 200, 200), font=font_small)
 
     return img, arrows_img
+
+# =====================
+# MOBILE SWIPE LAYER
+# =====================
+
+def swipe_layer(height_px: int = 240):
+    """
+    JS captures a swipe and sets query param mv=ul|ur|l|r|dl|dr then reloads.
+    We map 4 cardinal swipes into 4 of the 6 moves, and diagonals into the other 2.
+    """
+    components.html(
+        f"""
+        <div id="swipepad" style="
+            width: 100%;
+            height: {height_px}px;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            touch-action: none;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            color: rgba(255,255,255,0.65);
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+            font-size: 14px;
+            user-select:none;">
+            Swipe here (or on the board) to move
+        </div>
+        <script>
+        const el = document.getElementById("swipepad");
+        let sx=0, sy=0, t0=0;
+
+        function setMove(mv) {{
+            const url = new URL(window.location.href);
+            url.searchParams.set("mv", mv);
+            window.location.href = url.toString();
+        }}
+
+        function classify(dx, dy) {{
+            const adx = Math.abs(dx), ady = Math.abs(dy);
+            const minDist = 25;
+            if (Math.hypot(dx,dy) < minDist) return null;
+
+            // angle in degrees
+            const ang = Math.atan2(-dy, dx) * 180 / Math.PI; // y inverted
+            // bucket into 6 directions around a circle:
+            // 0° right, 60° up-right, 120° up-left, 180° left, -120° down-left, -60° down-right
+            // We'll map to mv codes: r, ur, ul, l, dl, dr
+            let a = ang;
+            // normalize to [-180,180]
+            if (a > 180) a -= 360;
+            if (a < -180) a += 360;
+
+            // nearest multiple of 60
+            const k = Math.round(a / 60);
+            const bucket = ((k % 6) + 6) % 6; // 0..5
+
+            // bucket index meaning:
+            // 0: right, 1: up-right, 2: up-left, 3: left, 4: down-left, 5: down-right
+            switch(bucket) {{
+                case 0: return "r";
+                case 1: return "ur";
+                case 2: return "ul";
+                case 3: return "l";
+                case 4: return "dl";
+                case 5: return "dr";
+            }}
+            return null;
+        }}
+
+        el.addEventListener("touchstart", (e) => {{
+            const t = e.touches[0];
+            sx = t.clientX; sy = t.clientY; t0 = Date.now();
+        }}, {{passive:true}});
+
+        el.addEventListener("touchend", (e) => {{
+            const t = e.changedTouches[0];
+            const dx = t.clientX - sx;
+            const dy = t.clientY - sy;
+            const mv = classify(dx, dy);
+            if (mv) setMove(mv);
+        }}, {{passive:true}});
+        </script>
+        """,
+        height=height_px + 10,
+    )
+
 
 # =====================
 # STREAMLIT APP
@@ -337,7 +416,6 @@ st.set_page_config(page_title="Hex 2048 Base-3", layout="centered")
 cells = generate_hex_cells(RADIUS)
 dir_lines = build_direction_lines(cells, DIRECTIONS)
 
-# centers (recenter to 0,0)
 centers_local = {c: axial_to_pixel(c[0], c[1], size=HEX_SIZE) for c in cells}
 cx0 = sum(x for x, _ in centers_local.values()) / len(centers_local)
 cy0 = sum(y for _, y in centers_local.values()) / len(centers_local)
@@ -350,51 +428,37 @@ if "last_click_t" not in st.session_state:
 
 state: GameState = st.session_state.state
 
-st.title("Hex 2048 (Base-3)")
-
-# --- Keyboard shortcuts using native Streamlit button shortcuts (works on Cloud) ---
-with st.sidebar:
-    st.subheader("Controls")
-    st.write("Keyboard: Q↖ E↗  A← D→  Z↙ C↘")
-    st.write("Mouse: click the arrow triangles")
-
-    reset = st.button("Reset", key="reset_btn")
-
-    # Small “hotkey buttons” (they can be visible; Streamlit will show hints)
-    # Using shortcut=... is now built-in. :contentReference[oaicite:2]{index=2}
-    mv_ul = st.button("↖ Up-Left", shortcut="Q", disabled=state.game_over, key="mv_ul")
-    mv_ur = st.button("↗ Up-Right", shortcut="E", disabled=state.game_over, key="mv_ur")
-    mv_l  = st.button("← Left",    shortcut="A", disabled=state.game_over, key="mv_l")
-    mv_r  = st.button("→ Right",   shortcut="D", disabled=state.game_over, key="mv_r")
-    mv_dl = st.button("↙ Down-Left", shortcut="Z", disabled=state.game_over, key="mv_dl")
-    mv_dr = st.button("↘ Down-Right", shortcut="X", disabled=state.game_over, key="mv_dr")
-
-if reset:
-    st.session_state.state = new_game(cells)
+# ---- Handle swipe action from query params (mv=...) ----
+q = st.query_params
+mv = q.get("mv", None)
+if mv in MOVE and not state.game_over:
+    do_move(state, MOVE[mv], dir_lines)
+    # clear param so it doesn't repeat on refresh
+    st.query_params.clear()
     st.rerun()
 
-if mv_l:
-    do_move(state, MOVE["left"], dir_lines); st.rerun()
-if mv_r:
-    do_move(state, MOVE["right"], dir_lines); st.rerun()
-if mv_ul:
-    do_move(state, MOVE["up_left"], dir_lines); st.rerun()
-if mv_ur:
-    do_move(state, MOVE["up_right"], dir_lines); st.rerun()
-if mv_dl:
-    do_move(state, MOVE["down_left"], dir_lines); st.rerun()
-if mv_dr:
-    do_move(state, MOVE["down_right"], dir_lines); st.rerun()
+st.title("Hex 2048 (Base-3) — Mobile Swipe")
+st.caption("Swipe to move. Tap arrows as fallback. (On iOS/Android this feels great.)")
 
-# --- Render + clickable arrow triangles ---
+with st.sidebar:
+    if st.button("Reset"):
+        st.session_state.state = new_game(cells)
+        st.query_params.clear()
+        st.rerun()
+    st.write("Moves: 6-direction swipe (auto-bucketed).")
+
+# Swipe pad (mobile-friendly)
+swipe_layer(height_px=190)
+
+# Render + clickable arrow triangles
 arrows_world = build_corner_arrows(cells, centers, 0.0, 0.0)
 img, arrows_img = render_board_image(cells, centers, state, arrows_world)
 
 click = streamlit_image_coordinates(img, key="board_click")
-
 st.image(img, use_container_width=True)
 st.metric("Score", state.score)
 
+# Clickable arrows
 if click and "x" in click and "y" in click and "time" in click:
     if st.session_state.last_click_t != click["time"]:
         st.session_state.last_click_t = click["time"]
@@ -414,5 +478,5 @@ if click and "x" in click and "y" in click and "time" in click:
             st.rerun()
 
 if state.game_over:
-    st.error("No moves left. Press Reset (R).")
+    st.error("No moves left. Tap Reset to play again.")
 
