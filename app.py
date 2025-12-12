@@ -3,7 +3,7 @@ import io
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -45,7 +45,6 @@ DIRECTIONS = [
 # Sliding happens along -DIRECTIONS[dir_index]
 MOVE = {"l": 0, "r": 3, "ul": 5, "ur": 4, "dl": 1, "dr": 2}
 
-
 # =====================
 # HEX GEOMETRY
 # =====================
@@ -70,7 +69,6 @@ def generate_hex_cells(radius: int) -> List[Tuple[int, int]]:
             cells.append((q, r))
     return cells
 
-
 # =====================
 # GAME LOGIC
 # =====================
@@ -94,26 +92,25 @@ def build_direction_lines(cells: List[Tuple[int, int]], directions) -> List[List
 def merge_triples(values: List[int]) -> Tuple[List[int], int]:
     if not values:
         return [], 0
-    result = []
-    score_add = 0
+    out = []
+    score = 0
     i = 0
-    n = len(values)
-    while i < n:
+    while i < len(values):
         v = values[i]
         j = i + 1
-        while j < n and values[j] == v:
+        while j < len(values) and values[j] == v:
             j += 1
-        run_len = j - i
-        triples = run_len // 3
-        rem = run_len % 3
+        run = j - i
+        triples = run // 3
+        rem = run % 3
         for _ in range(triples):
             nv = v * 3
-            result.append(nv)
-            score_add += nv
+            out.append(nv)
+            score += nv
         for _ in range(rem):
-            result.append(v)
+            out.append(v)
         i = j
-    return result, score_add
+    return out, score
 
 def level_from_value(v: int) -> int:
     if v <= 0:
@@ -129,8 +126,7 @@ class GameState:
 def new_game(cells: List[Tuple[int, int]]) -> GameState:
     board = {c: 0 for c in cells}
     s = GameState(board=board, score=0, game_over=False)
-    spawn_tile(s)
-    spawn_tile(s)
+    spawn_tile(s); spawn_tile(s)
     return s
 
 def spawn_tile(state: GameState) -> bool:
@@ -155,23 +151,18 @@ def has_moves(state: GameState, dir_lines) -> bool:
 def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
     if state.game_over:
         return False
-
     changed = False
     gained = 0
-
     for line in dir_lines[dir_index]:
         original = [state.board[c] for c in line]
         non_zero = [v for v in original if v != 0]
         if not non_zero:
             continue
-
         merged, add = merge_triples(non_zero)
         new_vals = merged + [0] * (len(line) - len(merged))
-
         if new_vals != original:
             changed = True
         gained += add
-
         for c, v in zip(line, new_vals):
             state.board[c] = v
 
@@ -180,12 +171,10 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
         spawn_tile(state)
         if not has_moves(state, dir_lines):
             state.game_over = True
-
     return changed
 
-
 # =====================
-# RENDER -> DATA URI PNG
+# RENDER -> PNG DATA URI
 # =====================
 def render_board_png(cells, centers, state: GameState) -> bytes:
     minx = miny = float("inf")
@@ -243,11 +232,11 @@ def png_to_data_uri(png_bytes: bytes) -> str:
 
 
 # =====================
-# APP
+# APP (MOBILE ONLY)
 # =====================
 st.set_page_config(page_title="Hex 2048 Base-3 (Mobile)", layout="wide")
 
-# No-scroll + hide Streamlit UI
+# No-scroll + hide chrome
 st.markdown(
     """
     <style>
@@ -272,90 +261,71 @@ centers = {c: (centers_local[c][0] - cx0, centers_local[c][1] - cy0) for c in ce
 
 if "state" not in st.session_state:
     st.session_state.state = new_game(cells)
+if "last_action_id" not in st.session_state:
+    st.session_state.last_action_id = None
 
 state: GameState = st.session_state.state
 
-# Apply move from query param mv=...
-mv = st.query_params.get("mv")
-if mv in MOVE and not state.game_over:
-    do_move(state, MOVE[mv], dir_lines)
-    st.query_params.clear()
-    st.rerun()
-
-# Reset from query param reset=1
-if st.query_params.get("reset") == "1":
-    st.session_state.state = new_game(cells)
-    st.query_params.clear()
-    st.rerun()
-
 data_uri = png_to_data_uri(render_board_png(cells, centers, state))
 
-html = f"""
-<div id="wrap" style="position:fixed; inset:0; background:rgb(18,18,22);
-     display:flex; flex-direction:column; align-items:center; justify-content:center;
-     overflow:hidden; touch-action:none;">
-
-  <div style="width:100%; display:flex; justify-content:space-between; align-items:center;
-       padding: 12px 14px; box-sizing:border-box;
-       color: rgba(255,255,255,0.92);
-       font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
-    <div style="font-size:16px;">Hex 2048 Base-3</div>
-    <button id="resetBtn" style="
-        font-size:14px; padding:8px 12px;
-        border-radius:14px;
-        border: 1px solid rgba(255,255,255,0.16);
-        background: rgba(255,255,255,0.08);
-        color: rgba(255,255,255,0.92);">
-      Reset
-    </button>
+# IMPORTANT: use Streamlit.setComponentValue(...) instead of window.location
+# and return {"mv": "...", "id": "..."} so Python can de-dupe.
+html = """
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background: rgb(18,18,22); }
+  #wrap { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; touch-action:none; }
+  #top { width:100%; display:flex; justify-content:space-between; align-items:center;
+         padding: 12px 14px; box-sizing:border-box; color: rgba(255,255,255,0.92);
+         font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+  #board { max-width:96vw; max-height:82vh; border-radius:18px; border:1px solid rgba(255,255,255,0.10);
+           box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+           user-select:none; -webkit-user-drag:none; touch-action:none; }
+  #hint { margin-top:10px; font-size:13px; color: rgba(255,255,255,0.70);
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+  button { font-size:14px; padding:8px 12px; border-radius:14px;
+           border: 1px solid rgba(255,255,255,0.16);
+           background: rgba(255,255,255,0.08);
+           color: rgba(255,255,255,0.92); }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="top">
+      <div style="font-size:16px;">Hex 2048 Base-3</div>
+      <button id="resetBtn">Reset</button>
+    </div>
+    <img id="board" />
+    <div id="hint">Swipe on the board (6 directions)</div>
   </div>
-
-  <img id="board" src="{data_uri}" style="
-      max-width: 96vw;
-      max-height: 82vh;
-      width: auto;
-      height: auto;
-      border-radius: 18px;
-      border: 1px solid rgba(255,255,255,0.10);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-      user-select:none;
-      -webkit-user-drag:none;
-      touch-action:none;" />
-
-  <div style="margin-top:10px; font-size:13px;
-      color: rgba(255,255,255,0.70);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
-    Swipe on the board (6 directions)
-  </div>
-</div>
 
 <script>
-  // Kill all scrolling/rubber-banding
-  document.addEventListener('touchmove', function(e) {{
-    e.preventDefault();
-  }}, {{ passive: false }});
+  // Streamlit component bridge
+  function send(val) {
+    // include a unique id so python can ignore repeats
+    const payload = { ...val, id: String(Date.now()) + "-" + String(Math.random()) };
+    if (window.Streamlit && window.Streamlit.setComponentValue) {
+      window.Streamlit.setComponentValue(payload);
+    }
+  }
+
+  // Prevent scrolling (must be passive:false)
+  document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
 
   const img = document.getElementById("board");
   const resetBtn = document.getElementById("resetBtn");
 
-  function setParam(key, val) {{
-    const url = new URL(window.location.href);
-    url.searchParams.set(key, val);
-    window.location.href = url.toString();
-  }}
-
-  resetBtn.addEventListener("click", () => setParam("reset", "1"));
-
   let sx=0, sy=0;
 
-  function classify(dx, dy) {{
+  function classify(dx, dy) {
     const dist = Math.hypot(dx, dy);
     if (dist < 22) return null;
 
     // 0 right, 60 up-right, 120 up-left, 180 left, -120 down-left, -60 down-right
     const ang = Math.atan2(-dy, dx) * 180 / Math.PI;
-
-    // nearest multiple of 60
     const k = Math.round(ang / 60);
     const bucket = ((k % 6) + 6) % 6;
 
@@ -367,22 +337,55 @@ html = f"""
     if (bucket === 4) return "dl";
     if (bucket === 5) return "dr";
     return null;
-  }}
+  }
 
-  img.addEventListener("touchstart", (e) => {{
+  img.addEventListener("touchstart", (e) => {
     const t = e.touches[0];
     sx = t.clientX; sy = t.clientY;
-  }}, {{ passive: true }});
+  }, { passive: true });
 
-  img.addEventListener("touchend", (e) => {{
+  img.addEventListener("touchend", (e) => {
     const t = e.changedTouches[0];
     const dx = t.clientX - sx;
     const dy = t.clientY - sy;
     const mv = classify(dx, dy);
-    if (mv) setParam("mv", mv);
-  }}, {{ passive: true }});
+    if (mv) send({ mv: mv });
+  }, { passive: true });
+
+  resetBtn.addEventListener("click", () => send({ reset: 1 }));
+
+  // Let Streamlit size the iframe nicely
+  if (window.Streamlit && window.Streamlit.setFrameHeight) {
+    window.Streamlit.setFrameHeight(900);
+  }
 </script>
+</body>
+</html>
 """
 
-components.html(html, height=900)
+# Render component, then set image src safely AFTER render (simple string replace)
+# This avoids any weird HTML parsing breakage around big base64 strings.
+html_with_img = html.replace('<img id="board" />', f'<img id="board" src="{data_uri}" />')
+
+event = components.html(html_with_img, height=900)
+
+# event comes back as dict from send(...)
+mv_action: Optional[str] = None
+do_reset = False
+
+if isinstance(event, dict):
+    if event.get("id") != st.session_state.last_action_id:
+        st.session_state.last_action_id = event.get("id")
+        if event.get("reset") == 1:
+            do_reset = True
+        if event.get("mv") in MOVE:
+            mv_action = event.get("mv")
+
+if do_reset:
+    st.session_state.state = new_game(cells)
+    st.rerun()
+
+if mv_action and not state.game_over:
+    do_move(state, MOVE[mv_action], dir_lines)
+    st.rerun()
 
