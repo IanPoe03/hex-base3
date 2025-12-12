@@ -4,20 +4,23 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageFont
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 # =====================
-# DESKTOP CONFIG
+# CONFIG
 # =====================
 RADIUS = 3
 HEX_SIZE = 48
-PADDING = 18
+PADDING = 24
 
 BG = (18, 18, 22)
 GRID_COLOR = (70, 70, 82)
 OUTLINE = (35, 35, 45)
 TEXT_COLOR = (15, 15, 18)
+
+ARROW_FILL = (225, 225, 240)
+ARROW_OUTLINE = (60, 60, 80)
 
 TILE_COLORS = [
     (235, 235, 235),  # 1
@@ -32,7 +35,7 @@ TILE_COLORS = [
     (255, 105, 80),   # 19683
 ]
 
-# Axial (pointy-top) directions
+# Axial (pointy-top) directions (neighbors)
 DIRECTIONS = [
     (1, 0),    # 0
     (1, -1),   # 1
@@ -42,6 +45,19 @@ DIRECTIONS = [
     (0, 1),    # 5
 ]
 
+# Sliding happens along -DIRECTIONS[dir_index]
+MOVE_LABELS = {
+    0: "←",
+    3: "→",
+    5: "↖",
+    4: "↗",
+    1: "↙",
+    2: "↘",
+}
+
+# =====================
+# GEOMETRY
+# =====================
 def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
     x = size * (math.sqrt(3) * q + (math.sqrt(3) / 2) * r)
     y = size * (3.0 / 2) * r
@@ -50,7 +66,7 @@ def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
 def hex_corners(cx: float, cy: float, size: int = HEX_SIZE) -> List[Tuple[float, float]]:
     pts = []
     for i in range(6):
-        a = math.radians(60 * i - 30)  # pointy-top
+        a = math.radians(60 * i - 30)
         pts.append((cx + size * math.cos(a), cy + size * math.sin(a)))
     return pts
 
@@ -63,6 +79,9 @@ def generate_hex_cells(radius: int) -> List[Tuple[int, int]]:
             cells.append((q, r))
     return cells
 
+# =====================
+# GAME LOGIC
+# =====================
 def build_direction_lines(cells: List[Tuple[int, int]], directions) -> List[List[List[Tuple[int, int]]]]:
     cell_set = set(cells)
     all_dir_lines = []
@@ -86,11 +105,10 @@ def merge_triples(values: List[int]) -> Tuple[List[int], int]:
     out = []
     score = 0
     i = 0
-    n = len(values)
-    while i < n:
+    while i < len(values):
         v = values[i]
         j = i + 1
-        while j < n and values[j] == v:
+        while j < len(values) and values[j] == v:
             j += 1
         run = j - i
         triples = run // 3
@@ -136,7 +154,7 @@ def has_moves(state: GameState, dir_lines) -> bool:
         for line in dir_lines[d_idx]:
             vals = [state.board[c] for c in line]
             for i in range(len(vals) - 2):
-                if vals[i] != 0 and vals[i] == vals[i + 1] == vals[i + 2]:
+                if vals[i] != 0 and vals[i] == vals[i+1] == vals[i+2]:
                     return True
     return False
 
@@ -171,12 +189,122 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
 
     return changed
 
-def render_board(cells, centers, state: GameState) -> Image.Image:
-    minx = miny = float("inf")
-    maxx = maxy = float("-inf")
+# =====================
+# CLICK HIT TESTING
+# =====================
+def point_in_triangle(px: float, py: float, a, b, c, eps: float = 0.03) -> bool:
+    ax, ay = a
+    bx, by = b
+    cx, cy = c
+    v0x, v0y = cx - ax, cy - ay
+    v1x, v1y = bx - ax, by - ay
+    v2x, v2y = px - ax, py - ay
+    dot00 = v0x*v0x + v0y*v0y
+    dot01 = v0x*v1x + v0y*v1y
+    dot02 = v0x*v2x + v0y*v2y
+    dot11 = v1x*v1x + v1y*v1y
+    dot12 = v1x*v2x + v1y*v2y
+    denom = dot00*dot11 - dot01*dot01
+    if denom == 0:
+        return False
+    inv = 1.0 / denom
+    u = (dot11*dot02 - dot01*dot12) * inv
+    v = (dot00*dot12 - dot01*dot02) * inv
+    return (u >= -eps) and (v >= -eps) and (u + v <= 1 + eps)
+
+def scale_triangle(tri, factor: float):
+    cx = sum(p[0] for p in tri) / 3.0
+    cy = sum(p[1] for p in tri) / 3.0
+    return [(cx + (x - cx)*factor, cy + (y - cy)*factor) for x, y in tri]
+
+def map_click_to_image_coords(click_dict, img_w, img_h):
+    x = float(click_dict["x"])
+    y = float(click_dict["y"])
+    disp_w = click_dict.get("width", None)
+    disp_h = click_dict.get("height", None)
+    if disp_w and disp_h:
+        disp_w = float(disp_w)
+        disp_h = float(disp_h)
+        if disp_w > 0 and disp_h > 0:
+            x = x * (img_w / disp_w)
+            y = y * (img_h / disp_h)
+    x = max(0.0, min(float(img_w - 1), x))
+    y = max(0.0, min(float(img_h - 1), y))
+    return x, y
+
+# =====================
+# CORNER ARROWS (outside board)
+# =====================
+def build_corner_arrows_world(centers: Dict[Tuple[int, int], Tuple[float, float]]):
+    # find board bounds in world coords
+    xs = [v[0] for v in centers.values()]
+    ys = [v[1] for v in centers.values()]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+
+    # approximate the 6 board "corners" in screen space (pointy-top)
+    # These are just anchor points; we then orient each arrow using the intended move direction.
+    corner_anchors = [
+        (maxx, (miny+maxy)/2),    # right-ish
+        ((maxx+minx)/2, miny),    # upper-right-ish
+        ((maxx+minx)/2, miny),    # upper-left-ish (same y; we’ll separate by direction vector)
+        (minx, (miny+maxy)/2),    # left-ish
+        ((maxx+minx)/2, maxy),    # lower-left-ish
+        ((maxx+minx)/2, maxy),    # lower-right-ish
+    ]
+
+    # use direction vectors to push anchors outwards properly
+    arrows = []
+    offset = HEX_SIZE * 2.1
+    arrow_len = 32
+    arrow_width = 36
+
+    # Map each move direction index to a corner slot (keeps them at corners like your earlier version)
+    # Here we place each arrow in the *same general angular area* as the move direction.
+    dir_to_slot = {3: 0, 4: 1, 5: 2, 0: 3, 1: 4, 2: 5}
+
+    for d in range(6):
+        slot = dir_to_slot[d]
+        ax0, ay0 = corner_anchors[slot]
+
+        # movement vector is along -direction (same as the move)
+        dq, dr = DIRECTIONS[d]
+        mvx, mvy = axial_to_pixel(-dq, -dr, size=HEX_SIZE)
+        L = math.hypot(mvx, mvy)
+        ux, uy = mvx / L, mvy / L
+
+        # push outward from center based on arrow direction
+        cx = ax0 + ux * offset
+        cy = ay0 + uy * offset
+
+        tip = (cx + ux * arrow_len, cy + uy * arrow_len)
+        back = (cx - ux * arrow_len * 0.75, cy - uy * arrow_len * 0.75)
+        px, py = -uy, ux
+        left = (back[0] + px * arrow_width / 2, back[1] + py * arrow_width / 2)
+        right = (back[0] - px * arrow_width / 2, back[1] - py * arrow_width / 2)
+
+        arrows.append({"dir": d, "tri": [tip, left, right]})
+
+    return arrows
+
+# =====================
+# RENDER
+# =====================
+def render_scene(cells, centers, state: GameState):
+    arrows_world = build_corner_arrows_world(centers)
+
+    # bounds = tiles + arrows
+    minx = miny = 1e18
+    maxx = maxy = -1e18
+
     for c in cells:
         cx, cy = centers[c]
         for x, y in hex_corners(cx, cy):
+            minx = min(minx, x); miny = min(miny, y)
+            maxx = max(maxx, x); maxy = max(maxy, y)
+
+    for a in arrows_world:
+        for x, y in a["tri"]:
             minx = min(minx, x); miny = min(miny, y)
             maxx = max(maxx, x); maxy = max(maxy, y)
 
@@ -190,11 +318,14 @@ def render_board(cells, centers, state: GameState) -> Image.Image:
 
     try:
         font_big = ImageFont.truetype("DejaVuSans.ttf", 28)
+        font_mid = ImageFont.truetype("DejaVuSans.ttf", 22)
         font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
     except Exception:
         font_big = ImageFont.load_default()
+        font_mid = ImageFont.load_default()
         font_small = ImageFont.load_default()
 
+    # tiles
     for c in cells:
         cx, cy = centers[c]
         pts = [(x + sx, y + sy) for x, y in hex_corners(cx, cy)]
@@ -212,43 +343,32 @@ def render_board(cells, centers, state: GameState) -> Image.Image:
         else:
             draw.polygon(pts, outline=(55, 55, 66), width=2)
 
+    # arrows (clickable)
+    arrows_img = []
+    for a in arrows_world:
+        tri = [(x + sx, y + sy) for x, y in a["tri"]]
+        draw.polygon(tri, fill=ARROW_FILL)
+        draw.polygon(tri, outline=ARROW_OUTLINE, width=3)
+
+        cx = sum(p[0] for p in tri) / 3
+        cy = sum(p[1] for p in tri) / 3
+        label = MOVE_LABELS.get(a["dir"], "")
+        bbox = draw.textbbox((0, 0), label, font=font_mid)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text((cx - tw / 2, cy - th / 2), label, fill=(25, 25, 30), font=font_mid)
+
+        arrows_img.append({"dir": a["dir"], "hit": scale_triangle(tri, 1.30)})
+
     draw.text((10, 10), f"Score: {state.score}", fill=(235, 235, 235), font=font_small)
     if state.game_over:
-        draw.text((10, 30), "GAME OVER (press R)", fill=(255, 180, 180), font=font_small)
+        draw.text((10, 30), "GAME OVER", fill=(255, 180, 180), font=font_small)
 
-    return img
-
-# =====================
-# KEY MAPPING (Q E A D Z X)
-# =====================
-KEY_TO_MOVE = {
-    "a": 0,  # left
-    "d": 3,  # right
-    "q": 5,  # up-left
-    "e": 4,  # up-right
-    "z": 1,  # down-left
-    "x": 2,  # down-right
-}
+    return img, arrows_img
 
 # =====================
 # STREAMLIT APP
 # =====================
 st.set_page_config(page_title="Hex 2048 Base-3 (Desktop)", layout="centered")
-
-# Keep keyboard focus on the hidden input
-components.html(
-    """
-    <script>
-      function focusKeyInput() {
-        const el = window.parent.document.querySelector('input[data-testid="stTextInput"]');
-        if (el) el.focus();
-      }
-      window.addEventListener('load', () => setTimeout(focusKeyInput, 200));
-      window.addEventListener('click', () => setTimeout(focusKeyInput, 50));
-    </script>
-    """,
-    height=0,
-)
 
 cells = generate_hex_cells(RADIUS)
 dir_lines = build_direction_lines(cells, DIRECTIONS)
@@ -260,27 +380,40 @@ centers = {c: (centers_local[c][0] - cx0, centers_local[c][1] - cy0) for c in ce
 
 if "state" not in st.session_state:
     st.session_state.state = new_game(cells)
-
-st.title("Hex 2048 (Base-3) — Desktop")
-st.caption("Controls: Q=↖  E=↗  A=←  D=→  Z=↙  X=↘   |   R=Reset")
-
-# The "hidden-ish" key input (must exist to capture keys)
-key = st.text_input("Key capture (click once if needed)", value="", max_chars=1, key="keycap")
-k = (key or "").strip().lower()
+if "last_click_time" not in st.session_state:
+    st.session_state.last_click_time = None
 
 state: GameState = st.session_state.state
 
-if k == "r":
-    st.session_state.state = new_game(cells)
-    st.session_state.keycap = ""
-    st.rerun()
+top_left, top_right = st.columns([3, 1])
+with top_left:
+    st.title("Hex 2048 (Base-3) — Desktop")
+    st.caption("Click the corner arrows to move. (Keyboard capture removed.)")
+with top_right:
+    if st.button("Reset"):
+        st.session_state.state = new_game(cells)
+        st.rerun()
 
-if k in KEY_TO_MOVE and not state.game_over:
-    moved = do_move(state, KEY_TO_MOVE[k], dir_lines)
-    st.session_state.keycap = ""  # clear so same key can be pressed repeatedly
-    st.rerun()
+img, arrows_img = render_scene(cells, centers, state)
+img_w, img_h = img.size
 
-# render board
-img = render_board(cells, centers, state)
+click = streamlit_image_coordinates(img, key="board", use_column_width=True)
+
+if click and "time" in click and "x" in click and "y" in click:
+    if st.session_state.last_click_time != click["time"]:
+        st.session_state.last_click_time = click["time"]
+        px, py = map_click_to_image_coords(click, img_w, img_h)
+
+        clicked_dir: Optional[int] = None
+        for a in arrows_img:
+            p0, p1, p2 = a["hit"]
+            if point_in_triangle(px, py, p0, p1, p2):
+                clicked_dir = a["dir"]
+                break
+
+        if clicked_dir is not None and not state.game_over:
+            do_move(state, clicked_dir, dir_lines)
+            st.rerun()
+
 st.image(img, use_container_width=True)
 
