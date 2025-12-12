@@ -319,7 +319,7 @@ def render_board_image(cells, centers, state, arrows):
         arrows_img.append({"dir": a["dir"], "points": pts})
 
     # HUD text
-    hud = "Keys: Q↖ E↗  A← D→  Z↙ C↘   |   Click arrows"
+    hud = "Keys: Q↖ E↗  A← D→  Z↙ X↘   |   Click arrows"
     draw.text((12, 10), hud, fill=(235, 235, 235), font=font_small)
 
     if state.game_over:
@@ -358,7 +358,7 @@ with st.sidebar:
     st.write("Keyboard: Q↖ E↗  A← D→  Z↙ C↘")
     st.write("Mouse: click the arrow triangles")
 
-    reset = st.button("Reset", shortcut="R", key="reset_btn")
+    reset = st.button("Reset", key="reset_btn")
 
     # Small “hotkey buttons” (they can be visible; Streamlit will show hints)
     # Using shortcut=... is now built-in. :contentReference[oaicite:2]{index=2}
@@ -367,7 +367,7 @@ with st.sidebar:
     mv_l  = st.button("← Left",    shortcut="A", disabled=state.game_over, key="mv_l")
     mv_r  = st.button("→ Right",   shortcut="D", disabled=state.game_over, key="mv_r")
     mv_dl = st.button("↙ Down-Left", shortcut="Z", disabled=state.game_over, key="mv_dl")
-    mv_dr = st.button("↘ Down-Right", shortcut="C", disabled=state.game_over, key="mv_dr")
+    mv_dr = st.button("↘ Down-Right", shortcut="X", disabled=state.game_over, key="mv_dr")
 
 if reset:
     st.session_state.state = new_game(cells)
