@@ -1,25 +1,26 @@
-import base64
-import io
 import math
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageFont
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 # =====================
-# MOBILE-ONLY CONFIG
+# MOBILE CONFIG
 # =====================
 RADIUS = 2
 HEX_SIZE = 58
-PADDING = 18
+PADDING = 22
 
 BG = (18, 18, 22)
 GRID_COLOR = (70, 70, 82)
 OUTLINE = (35, 35, 45)
 TEXT_COLOR = (15, 15, 18)
+
+ARROW_FILL = (220, 220, 235)
+ARROW_OUTLINE = (55, 55, 70)
 
 TILE_COLORS = [
     (235, 235, 235),  # 1
@@ -32,7 +33,7 @@ TILE_COLORS = [
     (255, 145, 110),  # 2187
 ]
 
-# Axial (pointy-top)
+# Axial (pointy-top) directions
 DIRECTIONS = [
     (1, 0),    # 0
     (1, -1),   # 1
@@ -43,7 +44,14 @@ DIRECTIONS = [
 ]
 
 # Sliding happens along -DIRECTIONS[dir_index]
-MOVE = {"l": 0, "r": 3, "ul": 5, "ur": 4, "dl": 1, "dr": 2}
+MOVE_LABELS = {
+    0: "←",
+    3: "→",
+    5: "↖",
+    4: "↗",
+    1: "↙",
+    2: "↘",
+}
 
 # =====================
 # HEX GEOMETRY
@@ -56,7 +64,7 @@ def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
 def hex_corners(cx: float, cy: float, size: int = HEX_SIZE) -> List[Tuple[float, float]]:
     pts = []
     for i in range(6):
-        a = math.radians(60 * i - 30)
+        a = math.radians(60 * i - 30)  # pointy-top
         pts.append((cx + size * math.cos(a), cy + size * math.sin(a)))
     return pts
 
@@ -95,10 +103,11 @@ def merge_triples(values: List[int]) -> Tuple[List[int], int]:
     out = []
     score = 0
     i = 0
-    while i < len(values):
+    n = len(values)
+    while i < n:
         v = values[i]
         j = i + 1
-        while j < len(values) and values[j] == v:
+        while j < n and values[j] == v:
             j += 1
         run = j - i
         triples = run // 3
@@ -144,24 +153,29 @@ def has_moves(state: GameState, dir_lines) -> bool:
         for line in dir_lines[d_idx]:
             vals = [state.board[c] for c in line]
             for i in range(len(vals) - 2):
-                if vals[i] != 0 and vals[i] == vals[i+1] == vals[i+2]:
+                if vals[i] != 0 and vals[i] == vals[i + 1] == vals[i + 2]:
                     return True
     return False
 
 def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
     if state.game_over:
         return False
+
     changed = False
     gained = 0
+
     for line in dir_lines[dir_index]:
         original = [state.board[c] for c in line]
         non_zero = [v for v in original if v != 0]
         if not non_zero:
             continue
+
         merged, add = merge_triples(non_zero)
         new_vals = merged + [0] * (len(line) - len(merged))
+
         if new_vals != original:
             changed = True
+
         gained += add
         for c, v in zip(line, new_vals):
             state.board[c] = v
@@ -171,17 +185,83 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
         spawn_tile(state)
         if not has_moves(state, dir_lines):
             state.game_over = True
+
     return changed
 
 # =====================
-# RENDER -> PNG DATA URI
+# CLICKABLE TRIANGLES
 # =====================
-def render_board_png(cells, centers, state: GameState) -> bytes:
-    minx = miny = float("inf")
-    maxx = maxy = float("-inf")
+def point_in_triangle(px: float, py: float, a, b, c) -> bool:
+    ax, ay = a
+    bx, by = b
+    cx, cy = c
+    v0x, v0y = cx - ax, cy - ay
+    v1x, v1y = bx - ax, by - ay
+    v2x, v2y = px - ax, py - ay
+    dot00 = v0x * v0x + v0y * v0y
+    dot01 = v0x * v1x + v0y * v1y
+    dot02 = v0x * v2x + v0y * v2y
+    dot11 = v1x * v1x + v1y * v1y
+    dot12 = v1x * v2x + v1y * v2y
+    denom = dot00 * dot11 - dot01 * dot01
+    if denom == 0:
+        return False
+    inv = 1.0 / denom
+    u = (dot11 * dot02 - dot01 * dot12) * inv
+    v = (dot00 * dot12 - dot01 * dot02) * inv
+    return (u >= 0) and (v >= 0) and (u + v <= 1)
+
+def build_arrows_world(cells, centers, board_cx=0.0, board_cy=0.0):
+    arrows = []
+    offset = HEX_SIZE * 1.55  # outside board
+    arrow_len = 30
+    arrow_width = 34
+
+    for idx, (dq, dr) in enumerate(DIRECTIONS):
+        # movement vector is along -direction
+        mvx, mvy = axial_to_pixel(-dq, -dr, size=HEX_SIZE)
+        L = math.hypot(mvx, mvy)
+        ux, uy = mvx / L, mvy / L
+
+        # find farthest tile in that direction
+        t_max = -1e18
+        for c in cells:
+            cx, cy = centers[c]
+            t = (cx - board_cx) * ux + (cy - board_cy) * uy
+            t_max = max(t_max, t)
+
+        cx = board_cx + (t_max + offset) * ux
+        cy = board_cy + (t_max + offset) * uy
+
+        tip = (cx + ux * arrow_len, cy + uy * arrow_len)
+        back = (cx - ux * arrow_len * 0.70, cy - uy * arrow_len * 0.70)
+
+        px, py = -uy, ux
+        left = (back[0] + px * arrow_width / 2, back[1] + py * arrow_width / 2)
+        right = (back[0] - px * arrow_width / 2, back[1] - py * arrow_width / 2)
+
+        arrows.append({"dir": idx, "tri": [tip, left, right]})
+
+    return arrows
+
+# =====================
+# RENDER
+# =====================
+def render_scene(cells, centers, state: GameState):
+    arrows_world = build_arrows_world(cells, centers, 0.0, 0.0)
+
+    # bounds (tiles + arrows)
+    minx = miny = 1e18
+    maxx = maxy = -1e18
+
     for c in cells:
         cx, cy = centers[c]
         for x, y in hex_corners(cx, cy):
+            minx = min(minx, x); miny = min(miny, y)
+            maxx = max(maxx, x); maxy = max(maxy, y)
+
+    for a in arrows_world:
+        for x, y in a["tri"]:
             minx = min(minx, x); miny = min(miny, y)
             maxx = max(maxx, x); maxy = max(maxy, y)
 
@@ -195,11 +275,14 @@ def render_board_png(cells, centers, state: GameState) -> bytes:
 
     try:
         font_big = ImageFont.truetype("DejaVuSans.ttf", 34)
+        font_mid = ImageFont.truetype("DejaVuSans.ttf", 22)
         font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
     except Exception:
         font_big = ImageFont.load_default()
+        font_mid = ImageFont.load_default()
         font_small = ImageFont.load_default()
 
+    # tiles
     for c in cells:
         cx, cy = centers[c]
         pts = [(x + sx, y + sy) for x, y in hex_corners(cx, cy)]
@@ -218,34 +301,44 @@ def render_board_png(cells, centers, state: GameState) -> bytes:
         else:
             draw.polygon(pts, outline=(55, 55, 66), width=2)
 
+    # arrows (convert to image coords + store for hit testing)
+    arrows_img = []
+    for a in arrows_world:
+        tri = [(x + sx, y + sy) for x, y in a["tri"]]
+        draw.polygon(tri, fill=ARROW_FILL)
+        draw.polygon(tri, outline=ARROW_OUTLINE, width=3)
+
+        # label centered
+        cx = sum(p[0] for p in tri) / 3
+        cy = sum(p[1] for p in tri) / 3
+        label = MOVE_LABELS.get(a["dir"], "")
+        bbox = draw.textbbox((0, 0), label, font=font_mid)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text((cx - tw / 2, cy - th / 2), label, fill=(25, 25, 30), font=font_mid)
+
+        arrows_img.append({"dir": a["dir"], "tri": tri})
+
+    # HUD
     draw.text((10, 10), f"Score: {state.score}", fill=(235, 235, 235), font=font_small)
     if state.game_over:
         draw.text((10, 30), "GAME OVER", fill=(255, 180, 180), font=font_small)
 
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-def png_to_data_uri(png_bytes: bytes) -> str:
-    b64 = base64.b64encode(png_bytes).decode("ascii")
-    return "data:image/png;base64," + b64
-
+    return img, arrows_img
 
 # =====================
-# APP (MOBILE ONLY)
+# STREAMLIT APP (MOBILE FIRST)
 # =====================
 st.set_page_config(page_title="Hex 2048 Base-3 (Mobile)", layout="wide")
 
-# No-scroll + hide chrome
 st.markdown(
     """
     <style>
       html, body { height: 100%; overflow: hidden !important; }
       #root, .stApp { height: 100vh; overflow: hidden !important; }
       header, footer { display: none !important; }
-      .block-container { padding: 0 !important; height: 100vh; overflow: hidden !important; }
       [data-testid="stSidebar"] { display: none !important; }
-      body { overscroll-behavior: none; }
+      .block-container { padding: 10px !important; height: 100vh; overflow: hidden !important; }
+      button[kind="primary"] { width: 100% !important; height: 52px !important; font-size: 18px !important; border-radius: 16px !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -261,131 +354,42 @@ centers = {c: (centers_local[c][0] - cx0, centers_local[c][1] - cy0) for c in ce
 
 if "state" not in st.session_state:
     st.session_state.state = new_game(cells)
-if "last_action_id" not in st.session_state:
-    st.session_state.last_action_id = None
+if "last_click_time" not in st.session_state:
+    st.session_state.last_click_time = None
 
 state: GameState = st.session_state.state
 
-data_uri = png_to_data_uri(render_board_png(cells, centers, state))
+top_left, top_right = st.columns([2, 1])
+with top_left:
+    st.markdown("### Hex 2048 Base-3")
+with top_right:
+    if st.button("Reset", type="primary"):
+        st.session_state.state = new_game(cells)
+        st.rerun()
 
-# IMPORTANT: use Streamlit.setComponentValue(...) instead of window.location
-# and return {"mv": "...", "id": "..."} so Python can de-dupe.
-html = """
-<!doctype html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-<style>
-  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background: rgb(18,18,22); }
-  #wrap { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; touch-action:none; }
-  #top { width:100%; display:flex; justify-content:space-between; align-items:center;
-         padding: 12px 14px; box-sizing:border-box; color: rgba(255,255,255,0.92);
-         font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-  #board { max-width:96vw; max-height:82vh; border-radius:18px; border:1px solid rgba(255,255,255,0.10);
-           box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-           user-select:none; -webkit-user-drag:none; touch-action:none; }
-  #hint { margin-top:10px; font-size:13px; color: rgba(255,255,255,0.70);
-          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-  button { font-size:14px; padding:8px 12px; border-radius:14px;
-           border: 1px solid rgba(255,255,255,0.16);
-           background: rgba(255,255,255,0.08);
-           color: rgba(255,255,255,0.92); }
-</style>
-</head>
-<body>
-  <div id="wrap">
-    <div id="top">
-      <div style="font-size:16px;">Hex 2048 Base-3</div>
-      <button id="resetBtn">Reset</button>
-    </div>
-    <img id="board" />
-    <div id="hint">Swipe on the board (6 directions)</div>
-  </div>
+img, arrows_img = render_scene(cells, centers, state)
 
-<script>
-  // Streamlit component bridge
-  function send(val) {
-    // include a unique id so python can ignore repeats
-    const payload = { ...val, id: String(Date.now()) + "-" + String(Math.random()) };
-    if (window.Streamlit && window.Streamlit.setComponentValue) {
-      window.Streamlit.setComponentValue(payload);
-    }
-  }
+click = streamlit_image_coordinates(img, key="board", use_column_width=True)
 
-  // Prevent scrolling (must be passive:false)
-  document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+# Tap arrows
+if click and "x" in click and "y" in click and "time" in click:
+    if st.session_state.last_click_time != click["time"]:
+        st.session_state.last_click_time = click["time"]
 
-  const img = document.getElementById("board");
-  const resetBtn = document.getElementById("resetBtn");
+        px = float(click["x"])
+        py = float(click["y"])
 
-  let sx=0, sy=0;
+        clicked_dir: Optional[int] = None
+        for a in arrows_img:
+            p0, p1, p2 = a["tri"]
+            if point_in_triangle(px, py, p0, p1, p2):
+                clicked_dir = a["dir"]
+                break
 
-  function classify(dx, dy) {
-    const dist = Math.hypot(dx, dy);
-    if (dist < 22) return null;
+        if clicked_dir is not None and not state.game_over:
+            do_move(state, clicked_dir, dir_lines)
+            st.rerun()
 
-    // 0 right, 60 up-right, 120 up-left, 180 left, -120 down-left, -60 down-right
-    const ang = Math.atan2(-dy, dx) * 180 / Math.PI;
-    const k = Math.round(ang / 60);
-    const bucket = ((k % 6) + 6) % 6;
-
-    // 0: r, 1: ur, 2: ul, 3: l, 4: dl, 5: dr
-    if (bucket === 0) return "r";
-    if (bucket === 1) return "ur";
-    if (bucket === 2) return "ul";
-    if (bucket === 3) return "l";
-    if (bucket === 4) return "dl";
-    if (bucket === 5) return "dr";
-    return null;
-  }
-
-  img.addEventListener("touchstart", (e) => {
-    const t = e.touches[0];
-    sx = t.clientX; sy = t.clientY;
-  }, { passive: true });
-
-  img.addEventListener("touchend", (e) => {
-    const t = e.changedTouches[0];
-    const dx = t.clientX - sx;
-    const dy = t.clientY - sy;
-    const mv = classify(dx, dy);
-    if (mv) send({ mv: mv });
-  }, { passive: true });
-
-  resetBtn.addEventListener("click", () => send({ reset: 1 }));
-
-  // Let Streamlit size the iframe nicely
-  if (window.Streamlit && window.Streamlit.setFrameHeight) {
-    window.Streamlit.setFrameHeight(900);
-  }
-</script>
-</body>
-</html>
-"""
-
-# Render component, then set image src safely AFTER render (simple string replace)
-# This avoids any weird HTML parsing breakage around big base64 strings.
-html_with_img = html.replace('<img id="board" />', f'<img id="board" src="{data_uri}" />')
-
-event = components.html(html_with_img, height=900)
-
-# event comes back as dict from send(...)
-mv_action: Optional[str] = None
-do_reset = False
-
-if isinstance(event, dict):
-    if event.get("id") != st.session_state.last_action_id:
-        st.session_state.last_action_id = event.get("id")
-        if event.get("reset") == 1:
-            do_reset = True
-        if event.get("mv") in MOVE:
-            mv_action = event.get("mv")
-
-if do_reset:
-    st.session_state.state = new_game(cells)
-    st.rerun()
-
-if mv_action and not state.game_over:
-    do_move(state, MOVE[mv_action], dir_lines)
-    st.rerun()
+if state.game_over:
+    st.error("No moves left. Tap Reset.")
 
