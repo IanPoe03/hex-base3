@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
 import streamlit.components.v1 as components
+from PIL import Image, ImageDraw, ImageFont
 
 # =====================
 # MOBILE-ONLY CONFIG
 # =====================
 RADIUS = 2
-HEX_SIZE = 58          # bigger tiles since board is smaller
+HEX_SIZE = 58
 PADDING = 18
 
 BG = (18, 18, 22)
@@ -32,7 +32,7 @@ TILE_COLORS = [
     (255, 145, 110),  # 2187
 ]
 
-# Axial (pointy-top) directions
+# Axial (pointy-top)
 DIRECTIONS = [
     (1, 0),    # 0
     (1, -1),   # 1
@@ -42,20 +42,13 @@ DIRECTIONS = [
     (0, 1),    # 5
 ]
 
-# We slide along -DIRECTIONS[dir_index], so these are the "feel-correct" labels:
-MOVE = {
-    "l": 0,
-    "r": 3,
-    "ul": 5,
-    "ur": 4,
-    "dl": 1,
-    "dr": 2,
-}
+# Sliding happens along -DIRECTIONS[dir_index]
+MOVE = {"l": 0, "r": 3, "ul": 5, "ur": 4, "dl": 1, "dr": 2}
+
 
 # =====================
 # HEX GEOMETRY
 # =====================
-
 def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
     x = size * (math.sqrt(3) * q + (math.sqrt(3) / 2) * r)
     y = size * (3.0 / 2) * r
@@ -64,8 +57,8 @@ def axial_to_pixel(q: int, r: int, size: int = HEX_SIZE) -> Tuple[float, float]:
 def hex_corners(cx: float, cy: float, size: int = HEX_SIZE) -> List[Tuple[float, float]]:
     pts = []
     for i in range(6):
-        angle = math.radians(60 * i - 30)  # pointy-top
-        pts.append((cx + size * math.cos(angle), cy + size * math.sin(angle)))
+        a = math.radians(60 * i - 30)
+        pts.append((cx + size * math.cos(a), cy + size * math.sin(a)))
     return pts
 
 def generate_hex_cells(radius: int) -> List[Tuple[int, int]]:
@@ -77,10 +70,10 @@ def generate_hex_cells(radius: int) -> List[Tuple[int, int]]:
             cells.append((q, r))
     return cells
 
+
 # =====================
 # GAME LOGIC
 # =====================
-
 def build_direction_lines(cells: List[Tuple[int, int]], directions) -> List[List[List[Tuple[int, int]]]]:
     cell_set = set(cells)
     all_dir_lines = []
@@ -151,7 +144,6 @@ def spawn_tile(state: GameState) -> bool:
 def has_moves(state: GameState, dir_lines) -> bool:
     if any(v == 0 for v in state.board.values()):
         return True
-    # any triple exists in any direction line?
     for d_idx in range(6):
         for line in dir_lines[d_idx]:
             vals = [state.board[c] for c in line]
@@ -191,12 +183,11 @@ def do_move(state: GameState, dir_index: int, dir_lines) -> bool:
 
     return changed
 
-# =====================
-# RENDER BOARD -> BASE64 PNG
-# =====================
 
+# =====================
+# RENDER -> DATA URI PNG
+# =====================
 def render_board_png(cells, centers, state: GameState) -> bytes:
-    # bounds
     minx = miny = float("inf")
     maxx = maxy = float("-inf")
     for c in cells:
@@ -214,7 +205,7 @@ def render_board_png(cells, centers, state: GameState) -> bytes:
     draw = ImageDraw.Draw(img)
 
     try:
-        font_big = ImageFont.truetype("DejaVuSans.ttf", 30)
+        font_big = ImageFont.truetype("DejaVuSans.ttf", 34)
         font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
     except Exception:
         font_big = ImageFont.load_default()
@@ -238,9 +229,7 @@ def render_board_png(cells, centers, state: GameState) -> bytes:
         else:
             draw.polygon(pts, outline=(55, 55, 66), width=2)
 
-    # small HUD at top-left
-    hud = f"Score: {state.score}"
-    draw.text((10, 10), hud, fill=(235, 235, 235), font=font_small)
+    draw.text((10, 10), f"Score: {state.score}", fill=(235, 235, 235), font=font_small)
     if state.game_over:
         draw.text((10, 30), "GAME OVER", fill=(255, 180, 180), font=font_small)
 
@@ -250,23 +239,23 @@ def render_board_png(cells, centers, state: GameState) -> bytes:
 
 def png_to_data_uri(png_bytes: bytes) -> str:
     b64 = base64.b64encode(png_bytes).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    return "data:image/png;base64," + b64
+
 
 # =====================
-# STREAMLIT APP (MOBILE ONLY)
+# APP
 # =====================
-
 st.set_page_config(page_title="Hex 2048 Base-3 (Mobile)", layout="wide")
 
-# Hard-disable scrolling + hide Streamlit chrome
+# No-scroll + hide Streamlit UI
 st.markdown(
     """
     <style>
       html, body { height: 100%; overflow: hidden !important; }
       #root, .stApp { height: 100vh; overflow: hidden !important; }
       header, footer { display: none !important; }
-      .block-container { padding-top: 0.3rem; padding-bottom: 0.1rem; height: 100vh; overflow: hidden !important; }
-      /* prevent iOS "rubber band" */
+      .block-container { padding: 0 !important; height: 100vh; overflow: hidden !important; }
+      [data-testid="stSidebar"] { display: none !important; }
       body { overscroll-behavior: none; }
     </style>
     """,
@@ -276,7 +265,6 @@ st.markdown(
 cells = generate_hex_cells(RADIUS)
 dir_lines = build_direction_lines(cells, DIRECTIONS)
 
-# centers, recentered
 centers_local = {c: axial_to_pixel(c[0], c[1], size=HEX_SIZE) for c in cells}
 cx0 = sum(x for x, _ in centers_local.values()) / len(centers_local)
 cy0 = sum(y for _, y in centers_local.values()) / len(centers_local)
@@ -287,7 +275,7 @@ if "state" not in st.session_state:
 
 state: GameState = st.session_state.state
 
-# Apply swipe move from query param mv=...
+# Apply move from query param mv=...
 mv = st.query_params.get("mv")
 if mv in MOVE and not state.game_over:
     do_move(state, MOVE[mv], dir_lines)
@@ -300,120 +288,101 @@ if st.query_params.get("reset") == "1":
     st.query_params.clear()
     st.rerun()
 
-# Render board image
-png = render_board_png(cells, centers, state)
-data_uri = png_to_data_uri(png)
+data_uri = png_to_data_uri(render_board_png(cells, centers, state))
 
-# Fullscreen HTML: shows image + captures swipes without scrolling
-components.html(
-    f"""
-    <div id="appwrap" style="
-        position: fixed; inset: 0;
-        background: rgb(18,18,22);
-        display:flex; flex-direction:column;
-        align-items:center; justify-content:center;
-        touch-action: none;
-        overflow:hidden;">
-      
-      <div style="
-          width: 100%;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          padding: 12px 16px;
-          box-sizing:border-box;
-          color: rgba(255,255,255,0.92);
-          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-          font-size: 16px;">
-        <div>Hex 2048 Base-3</div>
-        <button id="resetBtn" style="
-            font-size:14px;
-            padding: 8px 12px;
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.15);
-            background: rgba(255,255,255,0.08);
-            color: rgba(255,255,255,0.92);">
-          Reset
-        </button>
-      </div>
+html = f"""
+<div id="wrap" style="position:fixed; inset:0; background:rgb(18,18,22);
+     display:flex; flex-direction:column; align-items:center; justify-content:center;
+     overflow:hidden; touch-action:none;">
 
-      <img id="board" src="{data_uri}" style="
-          max-width: 96vw;
-          max-height: 80vh;
-          width: auto;
-          height: auto;
-          border-radius: 16px;
-          border: 1px solid rgba(255,255,255,0.10);
-          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-          user-select:none;
-          -webkit-user-drag:none;
-          touch-action:none;" />
+  <div style="width:100%; display:flex; justify-content:space-between; align-items:center;
+       padding: 12px 14px; box-sizing:border-box;
+       color: rgba(255,255,255,0.92);
+       font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
+    <div style="font-size:16px;">Hex 2048 Base-3</div>
+    <button id="resetBtn" style="
+        font-size:14px; padding:8px 12px;
+        border-radius:14px;
+        border: 1px solid rgba(255,255,255,0.16);
+        background: rgba(255,255,255,0.08);
+        color: rgba(255,255,255,0.92);">
+      Reset
+    </button>
+  </div>
 
-      <div style="
-          margin-top: 10px;
-          color: rgba(255,255,255,0.70);
-          font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-          font-size: 13px;">
-        Swipe on the board in 6 directions
-      </div>
-    </div>
+  <img id="board" src="{data_uri}" style="
+      max-width: 96vw;
+      max-height: 82vh;
+      width: auto;
+      height: auto;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      user-select:none;
+      -webkit-user-drag:none;
+      touch-action:none;" />
 
-    <script>
-      // Prevent any scrolling anywhere
-      document.addEventListener('touchmove', function(e) {{
-        e.preventDefault();
-      }}, {{ passive: false }});
+  <div style="margin-top:10px; font-size:13px;
+      color: rgba(255,255,255,0.70);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
+    Swipe on the board (6 directions)
+  </div>
+</div>
 
-      const img = document.getElementById("board");
-      const resetBtn = document.getElementById("resetBtn");
+<script>
+  // Kill all scrolling/rubber-banding
+  document.addEventListener('touchmove', function(e) {{
+    e.preventDefault();
+  }}, {{ passive: false }});
 
-      function setParam(key, val) {{
-        const url = new URL(window.location.href);
-        url.searchParams.set(key, val);
-        window.location.href = url.toString();
-      }}
+  const img = document.getElementById("board");
+  const resetBtn = document.getElementById("resetBtn");
 
-      resetBtn.addEventListener("click", () => setParam("reset", "1"));
+  function setParam(key, val) {{
+    const url = new URL(window.location.href);
+    url.searchParams.set(key, val);
+    window.location.href = url.toString();
+  }}
 
-      let sx=0, sy=0;
+  resetBtn.addEventListener("click", () => setParam("reset", "1"));
 
-      function classify(dx, dy) {{
-        const dist = Math.hypot(dx, dy);
-        if (dist < 22) return null;
+  let sx=0, sy=0;
 
-        // angle: 0 right, 60 up-right, 120 up-left, 180 left, -120 down-left, -60 down-right
-        const ang = Math.atan2(-dy, dx) * 180 / Math.PI;
+  function classify(dx, dy) {{
+    const dist = Math.hypot(dx, dy);
+    if (dist < 22) return null;
 
-        // snap to nearest 60°
-        const k = Math.round(ang / 60);
-        const bucket = ((k % 6) + 6) % 6;
+    // 0 right, 60 up-right, 120 up-left, 180 left, -120 down-left, -60 down-right
+    const ang = Math.atan2(-dy, dx) * 180 / Math.PI;
 
-        // 0: r, 1: ur, 2: ul, 3: l, 4: dl, 5: dr
-        if (bucket === 0) return "r";
-        if (bucket === 1) return "ur";
-        if (bucket === 2) return "ul";
-        if (bucket === 3) return "l";
-        if (bucket === 4) return "dl";
-        if (bucket === 5) return "dr";
-        return null;
-      }}
+    // nearest multiple of 60
+    const k = Math.round(ang / 60);
+    const bucket = ((k % 6) + 6) % 6;
 
-      img.addEventListener("touchstart", (e) => {{
-        const t = e.touches[0];
-        sx = t.clientX; sy = t.clientY;
-      }}, {{ passive: true }});
+    // 0: r, 1: ur, 2: ul, 3: l, 4: dl, 5: dr
+    if (bucket === 0) return "r";
+    if (bucket === 1) return "ur";
+    if (bucket === 2) return "ul";
+    if (bucket === 3) return "l";
+    if (bucket === 4) return "dl";
+    if (bucket === 5) return "dr";
+    return null;
+  }}
 
-      img.addEventListener("touchend", (e) => {{
-        const t = e.changedTouches[0];
-        const dx = t.clientX - sx;
-        const dy = t.clientY - sy;
-        const mv = classify(dx, dy);
-        if (mv) setParam("mv", mv);
-      }}, {{ passive: true }});
-    </script>
-    """,
-    height=0,  # fixed-position overlay, no need for Streamlit layout height
-)
+  img.addEventListener("touchstart", (e) => {{
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY;
+  }}, {{ passive: true }});
 
-# Nothing else below; mobile overlay handles everything.
+  img.addEventListener("touchend", (e) => {{
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+    const mv = classify(dx, dy);
+    if (mv) setParam("mv", mv);
+  }}, {{ passive: true }});
+</script>
+"""
+
+components.html(html, height=900)
 
